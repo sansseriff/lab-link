@@ -1,0 +1,34 @@
+[project]
+name = "lab-sync"
+version = "0.1.0"
+description = "Generic server-authoritative sync library for FastAPI"
+readme = "README.md"
+authors = [
+    { name = "Andrew Mueller", email = "amueller@caltech.edu" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "jsonpatch>=1.33",
+    "pydantic>=2.0",
+    "websockets>=12.0",
+]
+
+[project.optional-dependencies]
+persist = [
+    "sqlmodel>=0.0.24",
+]
+numpy = ["numpy>=1.24"]
+dev = ["pytest", "pytest-asyncio", "httpx", "uvicorn[standard]"]
+
+[build-system]
+requires = ["uv_build>=0.9.28,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "uvicorn[standard]>=0.42.0",
+]

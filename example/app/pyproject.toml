@@ -1,0 +1,18 @@
+[project]
+name = "app"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[standard]>=0.135.2",
+    "lab-sync",
+    "uvicorn[standard]>=0.42.0",
+]
+
+[tool.uv.sources]
+lab-sync = { path = "../../python", editable = true }
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.408",
+]
