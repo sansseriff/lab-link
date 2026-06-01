@@ -7,9 +7,9 @@ export default defineConfig({
   plugins: [svelte()],
   resolve: {
     alias: {
-      // Point lab-sync/svelte at the .svelte.ts source so Vite's Svelte plugin
+      // Point lab-link/svelte at the .svelte.ts source so Vite's Svelte plugin
       // compiles the runes ($state, $effect) rather than shipping pre-bundled output.
-      'lab-sync/svelte': path.resolve('../../js/src/svelte/index.svelte.ts'),
+      'lab-link/svelte': path.resolve('../../js/src/svelte/index.svelte.ts'),
     },
   },
   server: {

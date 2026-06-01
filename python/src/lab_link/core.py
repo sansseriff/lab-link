@@ -1,20 +1,66 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import logging
 from contextlib import asynccontextmanager
-from inspect import iscoroutinefunction
+from dataclasses import dataclass
+from inspect import Parameter, iscoroutinefunction, signature
 from typing import Any, Callable, Literal, TypeVar
 
 from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 from .connection_manager import ConnectionManager
+from .errors import CommandError
 from .persistence import PersistenceManager
 from .proxy import StateProxy, SyncState
 from .state_store import StateStore
 from .stream_buffer import AppendBuffer, DeltaBuffer, ReplaceBuffer, StreamRef
 
-T = TypeVar("T")
+T = TypeVar("T", bound=BaseModel)
 _F = TypeVar("_F", bound=Callable[..., Any])
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class CommandContext:
+    client_id: str
+    request_id: str | None
+    command: str
+
+
+@dataclass(frozen=True, slots=True)
+class PatchMetadata:
+    origin_client_id: str | None = None
+    request_id: str | None = None
+    command: str | None = None
+
+
+_current_command_context: contextvars.ContextVar[CommandContext | None] = (
+    contextvars.ContextVar("lab_link_command_context", default=None)
+)
+
+
+class StateTransaction:
+    def __init__(self, sync: "LabSync", meta: PatchMetadata) -> None:
+        self._sync = sync
+        self._meta = meta
+        self._changes: list[tuple[str, Any]] = []
+        self._closed = False
+
+    def __enter__(self) -> "StateTransaction":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._closed = True
+        if exc_type is None and self._changes:
+            self._sync._commit_changes(self._changes, self._meta)
+
+    def set(self, path: str, value: Any) -> None:
+        if self._closed:
+            raise RuntimeError("transaction is already closed")
+        self._changes.append((path, value))
 
 
 class LabSync:
@@ -22,7 +68,7 @@ class LabSync:
         self,
         prefix: str = "/sync",
         persist: bool = False,
-        db_url: str = "sqlite:///lab_sync.db",
+        db_url: str = "sqlite:///lab_link.db",
         compress: bool = False,
     ) -> None:
         self._prefix = prefix.rstrip("/")
@@ -39,6 +85,7 @@ class LabSync:
         self._persistence: PersistenceManager | None = None
         self._patch_queue: asyncio.Queue | None = None
         self._router: APIRouter | None = None
+        self._pending_patch_tasks: set[asyncio.Task[None]] = set()
 
         # ``sync.state`` is always a SyncState instance.
         # Before @sync.state is applied it acts as the decorator (callable).
@@ -47,14 +94,28 @@ class LabSync:
 
     # ── model registration ───────────────────────────────────────────────────
 
-    def _register_state_model(self, cls: type) -> None:
-        from pydantic import BaseModel
+    def _register_state_model(
+        self,
+        cls: type[BaseModel],
+        initial: BaseModel | dict[str, Any] | None = None,
+    ) -> None:
         if not issubclass(cls, BaseModel):
             raise TypeError(f"{cls.__name__} must be a pydantic BaseModel subclass")
-        initial = cls().model_dump(mode="json")
+        if initial is None:
+            initial = cls().model_dump(mode="json")
         self._store = StateStore(cls, initial)
         self._patch_queue = asyncio.Queue()
-        self.state._set_proxy(StateProxy(self._store, self._patch_queue))
+        self.state._set_proxy(
+            StateProxy(self._store, self._patch_queue, self._metadata_from_current_context)
+        )
+
+    def register_state(
+        self,
+        model_class: type[T],
+        *,
+        initial: T | dict[str, Any] | None = None,
+    ) -> None:
+        self._register_state_model(model_class, initial)
 
     # ── decorators ──────────────────────────────────────────────────────────
 
@@ -114,6 +175,37 @@ class LabSync:
         if self._store is None:
             raise RuntimeError("No @sync.state model registered")
         return self._store.get(path)
+
+    def set(self, path: str, value: Any) -> tuple[list[dict[str, Any]], int]:
+        """Set a JSON Pointer value, validate state, and broadcast one patch."""
+        return self._commit_changes([(path, value)], self._metadata_from_current_context())
+
+    def replace_state(self, state: BaseModel | dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+        if self._store is None:
+            raise RuntimeError("No sync state model registered")
+        patch, version = self._store.replace_state(state)
+        if patch:
+            self._schedule_patch_broadcast(
+                patch,
+                version,
+                self._metadata_from_current_context(),
+            )
+        return patch, version
+
+    def transaction(
+        self,
+        *,
+        origin: str | None = None,
+        request_id: str | None = None,
+        command: str | None = None,
+    ) -> StateTransaction:
+        ctx = _current_command_context.get()
+        meta = PatchMetadata(
+            origin_client_id=origin if origin is not None else (ctx.client_id if ctx else None),
+            request_id=request_id if request_id is not None else (ctx.request_id if ctx else None),
+            command=command if command is not None else (ctx.command if ctx else None),
+        )
+        return StateTransaction(self, meta)
 
     @property
     def streams(self) -> dict[str, AppendBuffer | ReplaceBuffer | DeltaBuffer]:
@@ -230,6 +322,7 @@ class LabSync:
                 if msg_type == "command":
                     await self._dispatch_command(
                         websocket=websocket,
+                        client_id=client_id,
                         command=str(data.get("command", "")),
                         params=dict(data.get("params") or {}),
                         request_id=data.get("requestId"),
@@ -242,13 +335,14 @@ class LabSync:
         except WebSocketDisconnect:
             pass
         except Exception:
-            pass
+            logger.exception("Unhandled WebSocket error for client %s", client_id)
         finally:
             await self._conn_manager.disconnect(client_id)
 
     async def _dispatch_command(
         self,
         websocket: WebSocket,
+        client_id: str,
         command: str,
         params: dict[str, Any],
         request_id: str | None,
@@ -261,40 +355,157 @@ class LabSync:
                         "type": "command_error",
                         "command": command,
                         "requestId": request_id,
-                        "error": f"Unknown command: {command!r}",
+                        "code": "unknown_command",
+                        "message": f"Unknown command: {command!r}",
+                        "severity": "error",
+                        "display": "toast",
+                        "recoverable": False,
+                        "originClientId": client_id,
+                        "version": self._store.version() if self._store else 0,
                     }
                 )
             return
 
+        ctx = CommandContext(client_id=client_id, request_id=request_id, command=command)
+        token = _current_command_context.set(ctx)
         try:
             if iscoroutinefunction(handler):
-                await handler(**params)
+                result = await self._call_handler(handler, ctx, params)
             else:
-                handler(**params)
+                result = self._call_handler(handler, ctx, params)
 
             if self._patch_queue is not None:
                 await self._patch_queue.join()
+            await self._flush_pending_patch_tasks()
 
             if request_id:
                 version = self._store.version() if self._store else 0
-                await websocket.send_json(
-                    {
-                        "type": "command_ack",
-                        "command": command,
-                        "requestId": request_id,
-                        "version": version,
-                    }
-                )
+                message: dict[str, Any] = {
+                    "type": "command_ack",
+                    "command": command,
+                    "requestId": request_id,
+                    "version": version,
+                }
+                if result is not None:
+                    message["result"] = result
+                await websocket.send_json(message)
+        except CommandError as exc:
+            await self._send_command_error(websocket, exc, command, request_id, client_id)
         except Exception as exc:
+            logger.exception("Command %r failed", command)
             if request_id:
-                await websocket.send_json(
-                    {
-                        "type": "command_error",
-                        "command": command,
-                        "requestId": request_id,
-                        "error": str(exc),
-                    }
+                await self._send_command_error(
+                    websocket,
+                    CommandError(
+                        code="command_failed",
+                        message=str(exc) or "Command failed.",
+                        detail=repr(exc),
+                        recoverable=True,
+                    ),
+                    command,
+                    request_id,
+                    client_id,
                 )
+        finally:
+            _current_command_context.reset(token)
+
+    def _call_handler(
+        self,
+        handler: Callable[..., Any],
+        ctx: CommandContext,
+        params: dict[str, Any],
+    ) -> Any:
+        sig = signature(handler)
+        call_params = dict(params)
+        for name, param in sig.parameters.items():
+            if name in call_params:
+                continue
+            if (
+                name == "ctx"
+                or param.annotation is CommandContext
+                or param.annotation == "CommandContext"
+            ):
+                call_params[name] = ctx
+                break
+            if param.kind in {Parameter.VAR_POSITIONAL, Parameter.VAR_KEYWORD}:
+                continue
+        return handler(**call_params)
+
+    async def _send_command_error(
+        self,
+        websocket: WebSocket,
+        exc: CommandError,
+        command: str,
+        request_id: str | None,
+        client_id: str,
+    ) -> None:
+        if not request_id:
+            return
+        await websocket.send_json(
+            exc.to_message(
+                command=command,
+                request_id=request_id,
+                version=self._store.version() if self._store else 0,
+                origin_client_id=client_id,
+            )
+        )
+
+    def _metadata_from_current_context(self) -> PatchMetadata:
+        ctx = _current_command_context.get()
+        if ctx is None:
+            return PatchMetadata()
+        return PatchMetadata(
+            origin_client_id=ctx.client_id,
+            request_id=ctx.request_id,
+            command=ctx.command,
+        )
+
+    def _commit_changes(
+        self,
+        changes: list[tuple[str, Any]],
+        meta: PatchMetadata,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if self._store is None:
+            raise RuntimeError("No sync state model registered")
+        patch, version = self._store.apply_values(changes)
+        if patch:
+            self._schedule_patch_broadcast(patch, version, meta)
+        return patch, version
+
+    def _schedule_patch_broadcast(
+        self,
+        patch: list[dict[str, Any]],
+        version: int,
+        meta: PatchMetadata,
+    ) -> None:
+        if self._conn_manager is None:
+            return
+        task = asyncio.create_task(self._broadcast_patch(patch, version, meta))
+        self._pending_patch_tasks.add(task)
+        task.add_done_callback(self._pending_patch_tasks.discard)
+
+    async def _broadcast_patch(
+        self,
+        patch: list[dict[str, Any]],
+        version: int,
+        meta: PatchMetadata,
+    ) -> None:
+        if self._conn_manager is None:
+            return
+        await self._conn_manager.broadcast_patch(
+            patch,
+            version,
+            origin_client_id=meta.origin_client_id,
+            request_id=meta.request_id,
+            command=meta.command,
+        )
+        if self._persistence:
+            await self._persistence.save_debounced(self._store.snapshot())
+
+    async def _flush_pending_patch_tasks(self) -> None:
+        while self._pending_patch_tasks:
+            tasks = list(self._pending_patch_tasks)
+            await asyncio.gather(*tasks)
 
 
 # ── background tasks ──────────────────────────────────────────────────────────
@@ -306,10 +517,21 @@ async def _drain_patch_queue(
     persistence: PersistenceManager | None,
 ) -> None:
     while True:
-        path, value = await queue.get()
+        item = await queue.get()
         try:
+            if len(item) == 2:
+                path, value = item
+                meta = PatchMetadata()
+            else:
+                path, value, meta = item
             patch, version = store.apply_value(path, value)
-            await conn_manager.broadcast_patch(patch, version)
+            await conn_manager.broadcast_patch(
+                patch,
+                version,
+                origin_client_id=meta.origin_client_id,
+                request_id=meta.request_id,
+                command=meta.command,
+            )
             if persistence:
                 await persistence.save_debounced(store.snapshot())
         finally:

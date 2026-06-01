@@ -1,0 +1,58 @@
+name: Publish npm Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    environment: npm
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Check package versions match
+        working-directory: .
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+          import tomllib
+
+          py_version = tomllib.loads(pathlib.Path("python/pyproject.toml").read_text())["project"]["version"]
+          js_version = json.loads(pathlib.Path("js/package.json").read_text())["version"]
+          if py_version != js_version:
+              raise SystemExit(f"version mismatch: python={py_version} js={js_version}")
+          PY
+
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run JavaScript tests
+        run: bun test
+
+      - name: Build JavaScript package
+        run: bun run build
+
+      - name: Publish to npm
+        run: npm publish

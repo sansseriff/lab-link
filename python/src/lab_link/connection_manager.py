@@ -33,8 +33,22 @@ class ConnectionManager:
         async with self._lock:
             self.connections.pop(client_id, None)
 
-    async def broadcast_patch(self, patch: list[dict[str, Any]], version: int) -> None:
+    async def broadcast_patch(
+        self,
+        patch: list[dict[str, Any]],
+        version: int,
+        *,
+        origin_client_id: str | None = None,
+        request_id: str | None = None,
+        command: str | None = None,
+    ) -> None:
         message = {"type": "patch", "patch": patch, "version": version}
+        if origin_client_id is not None:
+            message["originClientId"] = origin_client_id
+        if request_id is not None:
+            message["requestId"] = request_id
+        if command is not None:
+            message["command"] = command
         await self._broadcast_json(message)
 
     async def broadcast_json(self, message: dict[str, Any]) -> None:

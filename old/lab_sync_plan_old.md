@@ -1,8 +1,8 @@
-# Plan: `lab_sync` — Generic Server-Authoritative Sync Library
+# Plan: `lab_link` — Generic Server-Authoritative Sync Library
 
 ## Context
 
-The `server-lab-json-patch` repo bakes domain-specific models (pumps, sensors, alerts) into its sync infrastructure. `lab_sync` extracts and generalizes that machinery into an installable library where adding real-time state to a FastAPI app is as simple as decorating a Pydantic model and some functions. The target audience is scientists who know Python but not WebSocket/concurrency internals.
+The `server-lab-json-patch` repo bakes domain-specific models (pumps, sensors, alerts) into its sync infrastructure. `lab_link` extracts and generalizes that machinery into an installable library where adding real-time state to a FastAPI app is as simple as decorating a Pydantic model and some functions. The target audience is scientists who know Python but not WebSocket/concurrency internals.
 
 **Both a Python package and a JavaScript package will be created.** The Python package is the server; the JS package is the browser client with a Svelte 5 adapter (primary) and a React adapter stub.
 
@@ -17,14 +17,14 @@ Source files to generalize:
 ## Repository Structure
 
 ```
-lab_sync/                          ← monorepo root
+lab_link/                          ← monorepo root
 ├── README.md
 ├── .gitignore
 ├── python/                        ← uv-managed Python library
-│   ├── pyproject.toml             # name="lab-sync", src layout
+│   ├── pyproject.toml             # name="lab-link", src layout
 │   ├── uv.lock
 │   ├── src/
-│   │   └── lab_sync/
+│   │   └── lab_link/
 │   │       ├── __init__.py        # exports: LabSync
 │   │       ├── core.py            # LabSync class + decorator logic + lifespan
 │   │       ├── state_store.py     # Generic StateStore[T: BaseModel]
@@ -37,7 +37,7 @@ lab_sync/                          ← monorepo root
 │       ├── test_proxy.py
 │       └── test_core.py
 └── js/                            ← bun-managed TypeScript library
-    ├── package.json               # name="lab-sync"
+    ├── package.json               # name="lab-link"
     ├── bun.lock
     ├── tsconfig.json
     ├── tsup.config.ts             # 3 entry points: index, svelte/, react/
@@ -150,7 +150,7 @@ class StateProxy:
 
 ```python
 class LabSync:
-    def __init__(self, prefix="/sync", persist=False, db_url="sqlite:///lab_sync.db"): ...
+    def __init__(self, prefix="/sync", persist=False, db_url="sqlite:///lab_link.db"): ...
 
     def state(self, cls: type[T]) -> type[T]:
         """@sync.state — requires BaseModel subclass. Creates StateStore + StateProxy."""
@@ -446,7 +446,7 @@ class StreamHandle {
 Exports: `createSyncClient`, `useSyncState`, `useStream`. File must use `.svelte.ts` extension so the Svelte compiler processes runes (`$state`, `$derived`, `$effect`).
 
 ```typescript
-// lab-sync/src/svelte/index.ts  (.svelte.ts extension required for rune processing)
+// lab-link/src/svelte/index.ts  (.svelte.ts extension required for rune processing)
 import { SyncClient } from "../client.js"
 import type { StreamHandle } from "../stream-handle.js"
 
@@ -537,7 +537,7 @@ temperature = 22.5               // ✗ not reactive
 <!-- App.svelte -->
 <script>
   import { setContext } from 'svelte'
-  import { createSyncClient, useSyncState } from 'lab-sync/svelte'
+  import { createSyncClient, useSyncState } from 'lab-link/svelte'
 
   const client = createSyncClient('ws://localhost:8000/sync/ws')
   const state  = useSyncState(client)
@@ -598,7 +598,7 @@ export class PumpController {
 
 ```svelte
 <script>
-  import { useStream } from 'lab-sync/svelte'
+  import { useStream } from 'lab-link/svelte'
 
   const fft  = useStream(client, 'fft')
   const hist = useStream(client, 'histogram')
@@ -625,12 +625,12 @@ Three separate entry points built with `tsup` (wraps esbuild, generates `.d.ts`)
 ## Python Package Init
 
 ```bash
-cd /Users/andrew/Documents/PROGRAM_LOCAL/lab_sync
-mkdir lab_sync && cd lab_sync
+cd /Users/andrew/Documents/PROGRAM_LOCAL/lab_link
+mkdir lab_link && cd lab_link
 mkdir python js
 cd python
-uv init --lib --name lab-sync
-# Produces: src/lab_sync/__init__.py, pyproject.toml, uv.lock
+uv init --lib --name lab-link
+# Produces: src/lab_link/__init__.py, pyproject.toml, uv.lock
 ```
 
 Dependencies:
@@ -665,7 +665,7 @@ uv run pytest tests/ -v
 ### Python smoke test
 ```python
 # example.py
-from lab_sync import LabSync
+from lab_link import LabSync
 from pydantic import BaseModel
 
 sync = LabSync()
@@ -700,7 +700,7 @@ bun test
 2. Open 2+ browser tabs using the Svelte adapter — both receive patches in real time
 3. Kill and restore a tab — rejoins with fresh snapshot
 4. Send an out-of-range command — `send()` Promise rejects with error message
-5. Port `server-lab-json-patch` example to use `lab-sync` — no raw WebSocket code should remain in user code
+5. Port `server-lab-json-patch` example to use `lab-link` — no raw WebSocket code should remain in user code
 
 ### Stream verification
 ```python

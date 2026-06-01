@@ -1,15 +1,24 @@
-# js
+# lab-link JavaScript
 
-To install dependencies:
-
-```bash
-bun install
-```
-
-To run:
+Browser runtime and framework adapters for `lab-link`.
 
 ```bash
-bun run index.ts
+bun add lab-link
 ```
 
-This project was created using `bun init` in bun v1.3.10. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+```ts
+import { createSyncRuntime } from "lab-link/model"
+
+const runtime = createSyncRuntime({
+  url: `ws://${window.location.host}/sync/ws`,
+})
+```
+
+Exports:
+
+- `lab-link/core`: WebSocket transport, command promises, JSON Pointer helpers.
+- `lab-link/model`: `SyncRuntime`, `SyncNode`, field policies.
+- `lab-link/svelte`: Svelte 5 helpers.
+- `lab-link/react`: React helpers.
+
+Full docs: https://sansseriff.github.io/lab-link/

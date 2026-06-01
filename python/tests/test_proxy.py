@@ -3,8 +3,8 @@ import asyncio
 import pytest
 from pydantic import BaseModel
 
-from lab_sync.proxy import StateProxy
-from lab_sync.state_store import StateStore
+from lab_link.proxy import StateProxy
+from lab_link.state_store import StateStore
 
 
 class S(BaseModel):
@@ -41,7 +41,7 @@ def test_nested_write_enqueues():
 
 
 def test_nested_dict_returns_nested_proxy():
-    from lab_sync.proxy import NestedProxy
+    from lab_link.proxy import NestedProxy
     proxy, _, _ = _make_proxy()
     result = proxy.pump
     assert isinstance(result, NestedProxy)

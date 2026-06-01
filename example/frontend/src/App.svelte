@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createSyncClient, useSyncState, AppendGraph } from "lab-sync/svelte";
+  import { createSyncRuntime, useSyncState, AppendGraph } from "lab-link/svelte";
 
   interface SensorState {
     active: boolean;
@@ -7,15 +7,15 @@
     last_updated: number;
   }
 
-  const client = createSyncClient(`ws://${window.location.host}/sync/ws`);
-  const sensor = useSyncState<SensorState>(client);
-  const historyStream = client.stream("sensor_history", "append");
+  const runtime = createSyncRuntime({ url: `ws://${window.location.host}/sync/ws` });
+  const sensor = useSyncState<SensorState>(runtime);
+  const historyStream = runtime.stream("sensor_history", "append");
 
-  let status = $state(client.status);
-  client.onStatusChange((s) => (status = s));
+  let status = $state(runtime.status);
+  runtime.onStatus((s) => (status = s));
 
   async function toggle() {
-    await client.send("toggle");
+    await runtime.sendCommand("toggle");
   }
 
   function fmt(ts: number) {

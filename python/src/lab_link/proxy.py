@@ -38,11 +38,17 @@ class StateProxy:
     on every attribute write. Not exposed directly — use ``sync.state`` instead.
     """
 
-    __slots__ = ("_store", "_queue")
+    __slots__ = ("_store", "_queue", "_metadata_getter")
 
-    def __init__(self, store: "StateStore", queue: asyncio.Queue) -> None:
+    def __init__(
+        self,
+        store: "StateStore",
+        queue: asyncio.Queue,
+        metadata_getter: Callable[[], Any] | None = None,
+    ) -> None:
         object.__setattr__(self, "_store", store)
         object.__setattr__(self, "_queue", queue)
+        object.__setattr__(self, "_metadata_getter", metadata_getter)
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -58,7 +64,14 @@ class StateProxy:
 
     def _enqueue(self, path: str, value: Any) -> None:
         queue: asyncio.Queue = object.__getattribute__(self, "_queue")
-        queue.put_nowait((path, value))
+        metadata_getter: Callable[[], Any] | None = object.__getattribute__(
+            self,
+            "_metadata_getter",
+        )
+        if metadata_getter is None:
+            queue.put_nowait((path, value))
+        else:
+            queue.put_nowait((path, value, metadata_getter()))
 
     def _rebind_queue(self, queue: asyncio.Queue) -> None:
         object.__setattr__(self, "_queue", queue)

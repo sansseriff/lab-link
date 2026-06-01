@@ -1,41 +1,24 @@
-/**
- * React adapter stub for lab-sync.
- * Full implementation pending — see svelte adapter for the pattern.
- */
-import { useEffect, useRef, useState } from "react"
-import { SyncClient } from "../client.js"
-import type { SyncClientOptions } from "../client.js"
+import { useEffect, useState } from "react"
+import { createSyncRuntime, type SyncRuntime } from "../model/index.js"
 
-export { SyncClient }
-export type { SyncClientOptions }
+export { createSyncRuntime }
+export type { SyncRuntime }
 
-export function createSyncClient(url: string, options?: SyncClientOptions): SyncClient {
-  const client = new SyncClient(url, options)
-  client.connect()
-  return client
-}
-
-export function useSyncState<T extends Record<string, unknown>>(
-  client: SyncClient,
-): T {
+export function useSyncState<T extends Record<string, unknown>>(runtime: SyncRuntime): T {
   const [state, setState] = useState<T>({} as T)
 
   useEffect(() => {
-    const unsubSnapshot = client.onSnapshot(({ data }) => {
-      setState({ ...data } as T)
+    const unsubSnapshot = runtime.onSnapshot(({ data }) => {
+      setState(structuredClone(data as T))
     })
-
-    const unsubPatch = client.onPatch(() => {
-      // Re-read the full state from client on every patch.
-      // A production implementation would apply patches granularly.
-      setState({ ...(client.get<T>("") ?? {}) } as T)
+    const unsubPatch = runtime.onPatch(() => {
+      setState(structuredClone((runtime.snapshot() ?? {}) as T))
     })
-
     return () => {
       unsubSnapshot()
       unsubPatch()
     }
-  }, [client])
+  }, [runtime])
 
   return state
 }

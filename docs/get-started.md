@@ -1,0 +1,65 @@
+# Get Started
+
+Install the Python backend package in the service that owns hardware state:
+
+```bash
+uv add lab-link
+```
+
+Install the browser package in the frontend:
+
+```bash
+bun add lab-link
+```
+
+## Backend
+
+```python
+from pydantic import BaseModel, Field
+from lab_link import CommandContext, LabSync, ptr
+
+sync = LabSync()
+
+class Channel(BaseModel):
+    bias_voltage: float = 0.0
+
+class AppState(BaseModel):
+    channels: list[Channel] = Field(default_factory=lambda: [Channel()])
+
+sync.register_state(AppState, initial=AppState())
+
+@sync.command
+async def set_voltage(ctx: CommandContext, channel: int, value: float):
+    # Do hardware work first. Commit state only after side effects succeed.
+    sync.set(ptr("channels", channel, "bias_voltage"), round(value, 3))
+    return {"channel": channel, "bias_voltage": round(value, 3)}
+
+app = sync.create_app()
+```
+
+## Frontend
+
+```ts
+import { createSyncRuntime, SyncNode } from "lab-link/model"
+
+const runtime = createSyncRuntime({
+  url: `ws://${window.location.host}/sync/ws`,
+})
+
+class ChannelModel extends SyncNode<{ bias_voltage: number }> {
+  bias_voltage = 0
+  editing = false
+
+  override readonly fields = this.defineFields<this>({
+    bias_voltage: {
+      blockWhen: () => this.editing,
+      onBlocked: "queueLatest",
+      setVia: "set_voltage",
+    },
+  })
+
+  applySnapshot(snapshot: { bias_voltage: number }) {
+    this.bias_voltage = snapshot.bias_voltage
+  }
+}
+```

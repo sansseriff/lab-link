@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 from fastapi.staticfiles import StaticFiles
-from lab_sync import LabSync
+from lab_link import LabSync
 from pydantic import BaseModel
 
 sync = LabSync()

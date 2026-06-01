@@ -17,7 +17,7 @@
     "checkJs": true,
     "moduleDetection": "force",
     "paths": {
-      "lab-sync/svelte": ["../../js/src/svelte/index.svelte.ts"]
+      "lab-link/svelte": ["../../js/src/svelte/index.svelte.ts"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]

@@ -19,6 +19,6 @@
     "vite": "^8.0.1"
   },
   "dependencies": {
-    "lab-sync": "file:../../js"
+    "lab-link": "file:../../js"
   }
 }

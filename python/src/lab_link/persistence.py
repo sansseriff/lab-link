@@ -8,7 +8,7 @@ from typing import Any
 class PersistenceManager:
     """Optional SQLite persistence using sqlmodel. Activated when LabSync(persist=True)."""
 
-    def __init__(self, db_url: str = "sqlite:///lab_sync.db") -> None:
+    def __init__(self, db_url: str = "sqlite:///lab_link.db") -> None:
         self._db_url = db_url
         self._engine = None
         self._pending_save: asyncio.Task | None = None

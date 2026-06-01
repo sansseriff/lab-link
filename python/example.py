@@ -1,5 +1,5 @@
 """
-Smoke test / minimal usage example for lab-sync.
+Smoke test / minimal usage example for lab-link.
 
 Run:
     uv run uvicorn example:app
@@ -10,7 +10,7 @@ Then:
     # send: {"type":"command","command":"set_x","params":{"value":5},"requestId":"1"}
     # receive: command_ack + patch
 """
-from lab_sync import LabSync
+from lab_link import LabSync
 from pydantic import BaseModel
 
 sync = LabSync()

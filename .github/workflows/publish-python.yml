@@ -1,0 +1,53 @@
+name: Publish Python Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Check package versions match
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+          import tomllib
+
+          py_version = tomllib.loads(pathlib.Path("python/pyproject.toml").read_text())["project"]["version"]
+          js_version = json.loads(pathlib.Path("js/package.json").read_text())["version"]
+          if py_version != js_version:
+              raise SystemExit(f"version mismatch: python={py_version} js={js_version}")
+          PY
+
+      - name: Run Python tests
+        working-directory: python
+        run: uv run pytest
+
+      - name: Build Python distributions
+        working-directory: python
+        run: uv build --no-sources
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist

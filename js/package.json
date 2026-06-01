@@ -1,12 +1,26 @@
 {
-  "name": "lab-sync",
+  "name": "lab-link",
   "version": "0.1.0",
   "type": "module",
-  "description": "Generic server-authoritative sync library — browser client",
+  "description": "Browser runtime and adapters for server-authoritative lab link",
+  "homepage": "https://sansseriff.github.io/lab-link/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sansseriff/lab-link.git",
+    "directory": "js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./model": {
+      "types": "./dist/model/index.d.ts",
+      "default": "./dist/model/index.js"
     },
     "./svelte": {
       "types": "./dist/svelte/index.d.ts",

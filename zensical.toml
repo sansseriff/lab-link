@@ -1,0 +1,11 @@
+[project]
+site_name = "lab-link"
+site_url = "https://sansseriff.github.io/lab-link/"
+site_description = "Server-authoritative synchronization for laboratory instrument control."
+site_author = "Andrew Mueller"
+docs_dir = "docs"
+site_dir = "site"
+dev_addr = "localhost:8000"
+
+[project.theme]
+variant = "modern"

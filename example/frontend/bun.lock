@@ -5,7 +5,7 @@
     "": {
       "name": "frontend",
       "dependencies": {
-        "lab-sync": "file:../../js",
+        "lab-link": "file:../../js",
       },
       "devDependencies": {
         "@sveltejs/vite-plugin-svelte": "^7.0.0",
@@ -243,7 +243,7 @@
 
     "joycon": ["joycon@3.1.1", "", {}, "sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw=="],
 
-    "lab-sync": ["lab-sync@file:../../js", { "devDependencies": { "@types/bun": "latest", "@types/react": "^19.2.14", "svelte": "^5.55.0", "tsup": "^8.5.1", "typescript": "^5.9.3" }, "peerDependencies": { "svelte": ">=5" } }],
+    "lab-link": ["lab-link@file:../../js", { "devDependencies": { "@types/bun": "latest", "@types/react": "^19.2.14", "svelte": "^5.55.0", "tsup": "^8.5.1", "typescript": "^5.9.3" }, "peerDependencies": { "svelte": ">=5" } }],
 
     "lightningcss": ["lightningcss@1.32.0", "", { "dependencies": { "detect-libc": "^2.0.3" }, "optionalDependencies": { "lightningcss-android-arm64": "1.32.0", "lightningcss-darwin-arm64": "1.32.0", "lightningcss-darwin-x64": "1.32.0", "lightningcss-freebsd-x64": "1.32.0", "lightningcss-linux-arm-gnueabihf": "1.32.0", "lightningcss-linux-arm64-gnu": "1.32.0", "lightningcss-linux-arm64-musl": "1.32.0", "lightningcss-linux-x64-gnu": "1.32.0", "lightningcss-linux-x64-musl": "1.32.0", "lightningcss-win32-arm64-msvc": "1.32.0", "lightningcss-win32-x64-msvc": "1.32.0" } }, "sha512-NXYBzinNrblfraPGyrbPoD19C1h9lfI/1mzgWYvXUTe414Gz/X1FD2XBZSZM7rRTrMA8JL3OtAaGifrIKhQ5yQ=="],
 

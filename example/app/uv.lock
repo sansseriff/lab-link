@@ -38,7 +38,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fastapi", extra = ["standard"] },
-    { name = "lab-sync" },
+    { name = "lab-link" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -50,7 +50,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.2" },
-    { name = "lab-sync", editable = "../../python" },
+    { name = "lab-link", editable = "../../python" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.42.0" },
 ]
 
@@ -311,7 +311,7 @@ wheels = [
 ]
 
 [[package]]
-name = "lab-sync"
+name = "lab-link"
 version = "0.1.0"
 source = { editable = "../../python" }
 dependencies = [
