@@ -41,7 +41,7 @@ jobs:
 
       - name: Run Python tests
         working-directory: python
-        run: uv run pytest
+        run: uv run python -m pytest
 
       - name: Build Python distributions
         working-directory: python

@@ -63,3 +63,19 @@ class ChannelModel extends SyncNode<{ bias_voltage: number }> {
   }
 }
 ```
+
+## Python Client
+
+Use the Python client when another Python process needs to control a running
+`lab-link` GUI server through the same WebSocket protocol as the browser.
+
+```python
+from lab_link import LabLinkClient
+
+with LabLinkClient("ws://127.0.0.1:8000/sync/ws") as sync:
+    snapshot = sync.snapshot()
+    ack = sync.send_command(
+        "set_voltage",
+        {"channel": 0, "value": 1.2},
+    )
+```
