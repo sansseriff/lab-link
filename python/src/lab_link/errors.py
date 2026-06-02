@@ -19,7 +19,7 @@ class CommandError(Exception):
     recoverable: bool = True
 
     def __post_init__(self) -> None:
-        super().__init__(self.message)
+        Exception.__init__(self, self.message)
 
     def to_message(
         self,

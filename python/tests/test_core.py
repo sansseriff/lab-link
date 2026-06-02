@@ -202,3 +202,10 @@ def test_structured_command_error():
             assert msg["display"] == "banner"
             assert msg["path"] == "/x"
             assert msg["version"] == 0
+
+
+def test_command_error_constructs_as_exception():
+    error = CommandError(code="hardware_timeout", message="Timed out.")
+
+    assert isinstance(error, Exception)
+    assert error.args == ("Timed out.",)
