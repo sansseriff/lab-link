@@ -15,23 +15,23 @@ bun add lab-link
 ## Backend
 
 ```python
-from pydantic import BaseModel, Field
-from lab_link import CommandContext, LabSync, ptr
+from pydantic import Field
+from lab_link import CommandContext, LabSync, ReactiveModel
 
 sync = LabSync()
 
-class Channel(BaseModel):
+class Channel(ReactiveModel):
     bias_voltage: float = 0.0
 
-class AppState(BaseModel):
+class AppState(ReactiveModel):
     channels: list[Channel] = Field(default_factory=lambda: [Channel()])
 
-sync.register_state(AppState, initial=AppState())
+state = sync.bind_state(AppState())
 
 @sync.command
 async def set_voltage(ctx: CommandContext, channel: int, value: float):
     # Do hardware work first. Commit state only after side effects succeed.
-    sync.set(ptr("channels", channel, "bias_voltage"), round(value, 3))
+    state.channels[channel].bias_voltage = round(value, 3)
     return {"channel": channel, "bias_voltage": round(value, 3)}
 
 app = sync.create_app()

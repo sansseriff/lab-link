@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi[standard]>=0.135.2",
+    "starlette>=0.40",
     "lab-link",
     "uvicorn[standard]>=0.42.0",
 ]

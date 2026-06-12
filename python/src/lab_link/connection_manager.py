@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from typing import Any
 
-from fastapi import WebSocket
+from starlette.websockets import WebSocket
 
 
 class ConnectionManager:

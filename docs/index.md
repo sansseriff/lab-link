@@ -16,7 +16,7 @@ The core protocol is simple:
 
 `lab-link` is intentionally split into two packages:
 
-- `lab-link` on PyPI: the FastAPI/Pydantic backend runtime and Python sync
+- `lab-link` on PyPI: the Starlette/Pydantic backend runtime and Python sync
   client.
 - `lab-link` on npm: framework-neutral browser runtime plus Svelte and React
   adapters.
@@ -28,6 +28,7 @@ protocol changes share one semantic version.
 ## Start Here
 
 - [Get started](get-started.md)
+- [How lab-link works](how-it-works.md)
 - [Backend API](backend.md)
 - [Python Client API](python-client.md)
 - [Frontend API](frontend.md)

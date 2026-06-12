@@ -2,9 +2,8 @@ import random
 import time
 from pathlib import Path
 
-from fastapi.staticfiles import StaticFiles
-from lab_link import LabSync
-from pydantic import BaseModel
+from starlette.staticfiles import StaticFiles
+from lab_link import LabSync, ReactiveModel
 
 sync = LabSync()
 
@@ -12,29 +11,31 @@ sync = LabSync()
 sensor_history = sync.stream("sensor_history", mode="append", capacity=100)
 
 
-@sync.state
-class SensorState(BaseModel):
+class SensorState(ReactiveModel):
     active: bool = True
     value: float = 0.0
     last_updated: float = 0.0
 
 
+state = sync.bind_state(SensorState())
+
+
 @sync.command
 def toggle():
-    sync.state.active = not sync.state.active
+    state.active = not state.active
 
 
 @sync.updater(interval=0.016)  # 20 Hz — drives the graph stream
 async def fast_tick():
-    if sync.get("active"):
+    if state.active:
         await sensor_history.append(round(random.gauss(22.0, 2.0), 2))
 
 
 @sync.updater(interval=0.5)  # 2 Hz — updates the displayed number
 def slow_tick():
-    if sync.get("active"):
-        sync.state.value = round(random.gauss(22.0, 2.0), 2)
-        sync.state.last_updated = time.time()
+    if state.active:
+        state.value = round(random.gauss(22.0, 2.0), 2)
+        state.last_updated = time.time()
 
 
 app = sync.create_app()

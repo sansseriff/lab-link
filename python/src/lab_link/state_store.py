@@ -63,6 +63,18 @@ class StateStore(Generic[T]):
             patch = jsonpatch.make_patch(old_state, self._state)
             return list(patch), self._version
 
+    def apply_patch(self, ops: list[dict[str, Any]], *, bump_version: bool = True) -> int:
+        """Apply RFC-6902 ops without re-validating the model.
+
+        Used by the reactive engine, where validation already happened on
+        assignment. Returns the (possibly bumped) version.
+        """
+        with self._lock:
+            self._state = jsonpatch.apply_patch(self._state, ops)
+            if bump_version:
+                self._version += 1
+            return self._version
+
     def replace_state(self, state: BaseModel | dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
         with self._lock:
             old_state = json.loads(json.dumps(self._state))

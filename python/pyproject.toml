@@ -1,16 +1,16 @@
 [project]
 name = "lab-link"
 version = "0.2.0"
-description = "Generic server-authoritative sync library for FastAPI"
+description = "Generic server-authoritative sync library for ASGI apps (Starlette, FastAPI)"
 readme = "README.md"
 authors = [
     { name = "Andrew Mueller", email = "amueller@caltech.edu" }
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.115",
+    "starlette>=0.40",
     "jsonpatch>=1.33",
-    "pydantic>=2.0",
+    "pydantic>=2.7",
     "websockets>=12.0",
 ]
 

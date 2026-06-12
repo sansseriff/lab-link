@@ -3,22 +3,27 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from contextlib import asynccontextmanager
+import warnings
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from inspect import Parameter, iscoroutinefunction, signature
-from typing import Any, Callable, Literal, TypeVar
+from typing import Any, Callable, Iterator, Literal, TypeVar
 
-from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import BaseRoute, Route, WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from .connection_manager import ConnectionManager
 from .errors import CommandError
 from .persistence import PersistenceManager
-from .proxy import StateProxy, SyncState
-from .state_store import StateStore
+from .reactive import ChangeSink, ReactiveModel
+from .state_store import StateStore, _parse_pointer
 from .stream_buffer import AppendBuffer, DeltaBuffer, ReplaceBuffer, StreamRef
 
 T = TypeVar("T", bound=BaseModel)
+StateT = TypeVar("StateT", bound=ReactiveModel)
 _F = TypeVar("_F", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
 
@@ -55,7 +60,7 @@ class StateTransaction:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self._closed = True
         if exc_type is None and self._changes:
-            self._sync._commit_changes(self._changes, self._meta)
+            self._sync._commit_transaction(self._changes, self._meta)
 
     def set(self, path: str, value: Any) -> None:
         if self._closed:
@@ -77,37 +82,115 @@ class LabSync:
         self._compress = compress
 
         self._store: StateStore | None = None
+        self._state_obj: ReactiveModel | None = None
+        self._sink: ChangeSink | None = None
         self._commands: dict[str, Callable[..., Any]] = {}
         self._updaters: list[tuple[Callable[..., Any], float]] = []
         self._streams: dict[str, StreamRef] = {}
         self._live_buffers: dict[str, AppendBuffer | ReplaceBuffer | DeltaBuffer] = {}
         self._conn_manager: ConnectionManager | None = None
         self._persistence: PersistenceManager | None = None
-        self._patch_queue: asyncio.Queue | None = None
-        self._router: APIRouter | None = None
         self._pending_patch_tasks: set[asyncio.Task[None]] = set()
+        self._last_broadcast: asyncio.Task[None] | None = None
 
-        # ``sync.state`` is always a SyncState instance.
-        # Before @sync.state is applied it acts as the decorator (callable).
-        # After registration it delegates attribute access to the internal StateProxy.
-        self.state = SyncState(self._register_state_model)
+    # ── state binding ─────────────────────────────────────────────────────────
 
-    # ── model registration ───────────────────────────────────────────────────
+    def bind_state(self, instance: StateT) -> StateT:
+        """Bind a ReactiveModel instance as the authoritative state.
 
-    def _register_state_model(
-        self,
-        cls: type[BaseModel],
-        initial: BaseModel | dict[str, Any] | None = None,
-    ) -> None:
-        if not issubclass(cls, BaseModel):
-            raise TypeError(f"{cls.__name__} must be a pydantic BaseModel subclass")
-        if initial is None:
-            initial = cls().model_dump(mode="json")
-        self._store = StateStore(cls, initial)
-        self._patch_queue = asyncio.Queue()
-        self.state._set_proxy(
-            StateProxy(self._store, self._patch_queue, self._metadata_from_current_context)
+        After binding, every attribute/list/dict mutation on the tree is
+        validated, recorded, batched per event-loop tick, and broadcast as one
+        versioned patch message. Returns the instance for a typed reference.
+        """
+        if not isinstance(instance, ReactiveModel):
+            raise TypeError(
+                f"bind_state() requires a ReactiveModel instance, got "
+                f"{type(instance).__name__}"
+            )
+        if self._state_obj is not None or self._store is not None:
+            raise RuntimeError("a state model is already bound/registered")
+        if instance._ll_sink is not None or instance._ll_parent is not None:
+            raise RuntimeError(
+                "this instance is already bound to a LabSync (or nested in "
+                "another bound tree)"
+            )
+        self._store = StateStore(type(instance), instance)
+        self._sink = ChangeSink(
+            apply_local=self._apply_reactive_ops_local,
+            commit=self._commit_reactive_ops,
+            metadata_getter=self._metadata_from_current_context,
         )
+        instance._ll_sink = self._sink
+        self._state_obj = instance
+        return instance
+
+    @property
+    def state(self) -> ReactiveModel:
+        """The bound ReactiveModel instance."""
+        if self._state_obj is None:
+            raise RuntimeError("no state bound; call sync.bind_state(instance) first")
+        return self._state_obj
+
+    def load_state(
+        self, data: BaseModel | dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Bulk state replacement for restore paths.
+
+        Validates ``data`` against the bound class, swaps the contents of the
+        bound instance in place (existing references stay valid), and emits a
+        single whole-document ``replace`` patch.
+        """
+        if self._state_obj is None or self._sink is None or self._store is None:
+            raise RuntimeError("load_state() requires a bound state; call bind_state() first")
+        cls = type(self._state_obj)
+        validated = cls.model_validate(data)
+        self._sink.flush()  # don't mix earlier pending ops into the swap
+        with self._sink.muted():
+            for name in cls.model_fields:
+                setattr(self._state_obj, name, validated.__dict__.get(name))
+        ops: list[dict[str, Any]] = [
+            {"op": "replace", "path": "", "value": self._state_obj.model_dump(mode="json")}
+        ]
+        if self._sink.is_attached:
+            version = self._commit_reactive_ops(ops, self._metadata_from_current_context())
+        else:
+            self._apply_reactive_ops_local(ops)
+            version = self._store.version()
+        return ops, version
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """Suspend per-tick flushing; emit one combined patch on exit.
+
+        Avoid awaiting inside the block — mutations from interleaved tasks
+        would be attributed to their own metadata and flushed separately.
+        """
+        if self._sink is None:
+            raise RuntimeError("batch() requires a bound state; call bind_state() first")
+        self._sink.suspend()
+        try:
+            yield
+        finally:
+            self._sink.resume()
+
+    def publish(self) -> tuple[list[dict[str, Any]], int]:
+        """Dump-and-diff fallback: diff the bound model against the mirror and
+        broadcast the difference. With the reactive engine the diff is normally
+        empty; this is the escape hatch and the testing oracle."""
+        if self._state_obj is None or self._store is None:
+            raise RuntimeError("publish() requires a bound state; call bind_state() first")
+        if self._sink is not None:
+            self._sink.flush()
+        if self._store.snapshot() == self._state_obj.model_dump(mode="json"):
+            return [], self._store.version()
+        patch, version = self._store.replace_state(self._state_obj)
+        if patch:
+            self._schedule_patch_broadcast(
+                patch, version, self._metadata_from_current_context()
+            )
+        return patch, version
+
+    # ── legacy (deprecated) registration ──────────────────────────────────────
 
     def register_state(
         self,
@@ -115,7 +198,30 @@ class LabSync:
         *,
         initial: T | dict[str, Any] | None = None,
     ) -> None:
+        """Deprecated: use ``bind_state()`` with a ReactiveModel instance."""
+        warnings.warn(
+            "register_state() is deprecated; subclass lab_link.ReactiveModel "
+            "and call sync.bind_state(instance) instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if isinstance(initial, ReactiveModel):
+            self.bind_state(initial)
+            return
         self._register_state_model(model_class, initial)
+
+    def _register_state_model(
+        self,
+        cls: type[BaseModel],
+        initial: BaseModel | dict[str, Any] | None = None,
+    ) -> None:
+        if not (isinstance(cls, type) and issubclass(cls, BaseModel)):
+            raise TypeError(f"{cls!r} must be a pydantic BaseModel subclass")
+        if self._state_obj is not None or self._store is not None:
+            raise RuntimeError("a state model is already bound/registered")
+        if initial is None:
+            initial = cls().model_dump(mode="json")
+        self._store = StateStore(cls, initial)
 
     # ── decorators ──────────────────────────────────────────────────────────
 
@@ -168,21 +274,43 @@ class LabSync:
         else:
             raise ValueError(f"Unknown stream mode: {mode!r}")
 
-    # ── state access ─────────────────────────────────────────────────────────
+    # ── path-based state access (deprecated) ──────────────────────────────────
 
     def get(self, path: str) -> Any:
-        """Read helper: sync.get('pump/speed') → scalar value."""
+        """Deprecated: read attributes of ``sync.state`` directly."""
+        warnings.warn(
+            "sync.get() is deprecated; read attributes of sync.state directly",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self._store is None:
-            raise RuntimeError("No @sync.state model registered")
+            raise RuntimeError("no state bound or registered")
         return self._store.get(path)
 
     def set(self, path: str, value: Any) -> tuple[list[dict[str, Any]], int]:
-        """Set a JSON Pointer value, validate state, and broadcast one patch."""
+        """Deprecated: mutate attributes of ``sync.state`` directly."""
+        warnings.warn(
+            "sync.set() is deprecated; mutate attributes of sync.state directly",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if self._state_obj is not None:
+            self._set_on_model(path, value)
+            ops = self._sink.flush() if self._sink is not None else []
+            return ops, self._store.version() if self._store else 0
         return self._commit_changes([(path, value)], self._metadata_from_current_context())
 
     def replace_state(self, state: BaseModel | dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+        """Deprecated: use ``load_state()``."""
+        warnings.warn(
+            "sync.replace_state() is deprecated; use sync.load_state()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if self._state_obj is not None:
+            return self.load_state(state)
         if self._store is None:
-            raise RuntimeError("No sync state model registered")
+            raise RuntimeError("no state bound or registered")
         patch, version = self._store.replace_state(state)
         if patch:
             self._schedule_patch_broadcast(
@@ -199,6 +327,13 @@ class LabSync:
         request_id: str | None = None,
         command: str | None = None,
     ) -> StateTransaction:
+        """Deprecated: use ``with sync.batch():`` and mutate ``sync.state``."""
+        warnings.warn(
+            "sync.transaction() is deprecated; use `with sync.batch():` and "
+            "mutate sync.state directly",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         ctx = _current_command_context.get()
         meta = PatchMetadata(
             origin_client_id=origin if origin is not None else (ctx.client_id if ctx else None),
@@ -207,34 +342,50 @@ class LabSync:
         )
         return StateTransaction(self, meta)
 
+    def _set_on_model(self, path: str, value: Any) -> None:
+        parts = _parse_pointer(path)
+        if not parts:
+            raise ValueError("path must not be empty; use load_state() for root replacement")
+        node: Any = self._state_obj
+        for part in parts[:-1]:
+            node = _model_child(node, part, path)
+        last = parts[-1]
+        if isinstance(node, ReactiveModel):
+            setattr(node, last, value)
+        elif isinstance(node, list):
+            if last == "-":
+                node.append(value)
+            else:
+                node[int(last)] = value
+        elif isinstance(node, dict):
+            node[last] = value
+        else:
+            raise TypeError(f"path {path!r} targets a non-container value")
+
     @property
     def streams(self) -> dict[str, AppendBuffer | ReplaceBuffer | DeltaBuffer]:
         return self._live_buffers
 
-    # ── FastAPI integration ───────────────────────────────────────────────────
+    # ── ASGI integration ─────────────────────────────────────────────────────
 
     @property
-    def router(self) -> APIRouter:
-        if self._router is not None:
-            return self._router
-        router = APIRouter(prefix=self._prefix)
+    def routes(self) -> list[BaseRoute]:
+        """Starlette routes for `GET {prefix}/state` and `WS {prefix}/ws`.
 
-        @router.get("/state")
-        async def get_state() -> dict[str, Any]:
-            if self._store is None:
-                return {}
-            return self._store.snapshot()
+        Pass to `Starlette(routes=...)` or `app.routes.extend(...)`. FastAPI
+        apps can instead wire `handle_ws` to a route of their choosing.
+        """
+        async def get_state(request: Any) -> JSONResponse:
+            return JSONResponse(self._store.snapshot() if self._store else {})
 
-        @router.websocket("/ws")
-        async def ws_endpoint(websocket: WebSocket) -> None:
-            await self._handle_ws(websocket)
-
-        self._router = router
-        return router
+        return [
+            Route(f"{self._prefix}/state", get_state),
+            WebSocketRoute(f"{self._prefix}/ws", self.handle_ws),
+        ]
 
     @asynccontextmanager
-    async def lifespan(self, app: FastAPI | None = None):
-        """Use in FastAPI lifespan to start drain task, updaters, persistence."""
+    async def lifespan(self, app: Any | None = None):
+        """Use as app lifespan to start updaters, persistence, and broadcasting."""
         self._conn_manager = ConnectionManager()
 
         # Materialise all StreamRefs now that we have a conn_manager
@@ -243,36 +394,25 @@ class LabSync:
             ref.materialize(buf)
             self._live_buffers[sid] = buf
 
-        # Recreate queue in running loop and rebind proxy
-        self._patch_queue = asyncio.Queue()
-        proxy = self.state._get_proxy()
-        if proxy is not None:
-            proxy._rebind_queue(self._patch_queue)
-
-        # Optional persistence
+        # Optional persistence — a corrupt database must not block startup.
+        # Restore happens before the sink attaches to the loop, so the loaded
+        # state lands silently at version 0 (there are no clients yet).
         if self._persist and self._store is not None:
-            self._persistence = PersistenceManager(self._db_url)
-            saved = self._persistence.initialize()
-            if saved:
-                try:
-                    self._store.replace_state(saved)
-                except Exception:
-                    pass
+            try:
+                self._persistence = PersistenceManager(self._db_url)
+                saved = self._persistence.initialize()
+                if saved:
+                    if self._state_obj is not None:
+                        self.load_state(saved)
+                    else:
+                        self._store.replace_state(saved)
+            except Exception:
+                logger.exception("Failed to restore persisted state from %s", self._db_url)
+
+        if self._sink is not None:
+            self._sink.attach_loop(asyncio.get_running_loop())
 
         tasks: list[asyncio.Task[None]] = []
-
-        if self._store is not None:
-            tasks.append(
-                asyncio.create_task(
-                    _drain_patch_queue(
-                        self._patch_queue,
-                        self._store,
-                        self._conn_manager,
-                        self._persistence,
-                    )
-                )
-            )
-
         for fn, interval in self._updaters:
             tasks.append(asyncio.create_task(_run_updater(fn, interval)))
 
@@ -286,25 +426,29 @@ class LabSync:
             except asyncio.CancelledError:
                 pass
 
+        if self._sink is not None:
+            self._sink.flush()
+            self._sink.detach_loop()
+
         if self._persistence and self._store:
             self._persistence.save_sync(self._store.snapshot())
 
         await self._conn_manager.close_all()
 
-    def create_app(self, **fastapi_kwargs: Any) -> FastAPI:
-        """Convenience: creates FastAPI app with lifespan + router pre-wired."""
+    def create_app(self, **starlette_kwargs: Any) -> Starlette:
+        """Convenience: creates a Starlette app with lifespan + routes pre-wired."""
         @asynccontextmanager
-        async def _lifespan(app: FastAPI):
+        async def _lifespan(app: Starlette):
             async with self.lifespan(app):
                 yield
 
-        app = FastAPI(lifespan=_lifespan, **fastapi_kwargs)
-        app.include_router(self.router)
-        return app
+        routes = list(self.routes) + list(starlette_kwargs.pop("routes", []))
+        return Starlette(lifespan=_lifespan, routes=routes, **starlette_kwargs)
 
-    # ── internal WebSocket handler ────────────────────────────────────────────
+    # ── WebSocket handler ─────────────────────────────────────────────────────
 
-    async def _handle_ws(self, websocket: WebSocket) -> None:
+    async def handle_ws(self, websocket: WebSocket) -> None:
+        """Serve one sync client. Attach to any websocket route in your app."""
         client_id = ConnectionManager.generate_client_id()
         snapshot = self._store.snapshot() if self._store else {}
         version = self._store.version() if self._store else 0
@@ -374,8 +518,10 @@ class LabSync:
             else:
                 result = self._call_handler(handler, ctx, params)
 
-            if self._patch_queue is not None:
-                await self._patch_queue.join()
+            # Every patch produced by this command must reach the wire before
+            # its ack, and the ack must carry the post-command version.
+            if self._sink is not None:
+                self._sink.flush()
             await self._flush_pending_patch_tasks()
 
             if request_id:
@@ -460,13 +606,37 @@ class LabSync:
             command=ctx.command,
         )
 
+    # ── patch commit / broadcast ──────────────────────────────────────────────
+
+    def _commit_reactive_ops(self, ops: list[dict[str, Any]], meta: PatchMetadata) -> int:
+        version = self._store.apply_patch(ops)
+        self._schedule_patch_broadcast(ops, version, meta)
+        return version
+
+    def _apply_reactive_ops_local(self, ops: list[dict[str, Any]]) -> None:
+        self._store.apply_patch(ops, bump_version=False)
+
+    def _commit_transaction(
+        self,
+        changes: list[tuple[str, Any]],
+        meta: PatchMetadata,
+    ) -> None:
+        if self._state_obj is not None:
+            # Reactive mode: metadata is captured from the command context at
+            # record time; explicit origin/request_id overrides are ignored.
+            with self.batch():
+                for path, value in changes:
+                    self._set_on_model(path, value)
+            return
+        self._commit_changes(changes, meta)
+
     def _commit_changes(
         self,
         changes: list[tuple[str, Any]],
         meta: PatchMetadata,
     ) -> tuple[list[dict[str, Any]], int]:
         if self._store is None:
-            raise RuntimeError("No sync state model registered")
+            raise RuntimeError("no state bound or registered")
         patch, version = self._store.apply_values(changes)
         if patch:
             self._schedule_patch_broadcast(patch, version, meta)
@@ -480,7 +650,20 @@ class LabSync:
     ) -> None:
         if self._conn_manager is None:
             return
-        task = asyncio.create_task(self._broadcast_patch(patch, version, meta))
+        # Chain on the previous broadcast so patches reach the wire in
+        # version order even when several flushes land in one tick.
+        previous = self._last_broadcast
+
+        async def _ordered_broadcast() -> None:
+            if previous is not None:
+                try:
+                    await previous
+                except Exception:
+                    pass
+            await self._broadcast_patch(patch, version, meta)
+
+        task = asyncio.create_task(_ordered_broadcast())
+        self._last_broadcast = task
         self._pending_patch_tasks.add(task)
         task.add_done_callback(self._pending_patch_tasks.discard)
 
@@ -508,35 +691,17 @@ class LabSync:
             await asyncio.gather(*tasks)
 
 
+def _model_child(node: Any, part: str, full_path: str) -> Any:
+    if isinstance(node, ReactiveModel):
+        return getattr(node, part)
+    if isinstance(node, list):
+        return node[int(part)]
+    if isinstance(node, dict):
+        return node[part]
+    raise TypeError(f"path {full_path!r} traverses a non-container value")
+
+
 # ── background tasks ──────────────────────────────────────────────────────────
-
-async def _drain_patch_queue(
-    queue: asyncio.Queue,
-    store: StateStore,
-    conn_manager: ConnectionManager,
-    persistence: PersistenceManager | None,
-) -> None:
-    while True:
-        item = await queue.get()
-        try:
-            if len(item) == 2:
-                path, value = item
-                meta = PatchMetadata()
-            else:
-                path, value, meta = item
-            patch, version = store.apply_value(path, value)
-            await conn_manager.broadcast_patch(
-                patch,
-                version,
-                origin_client_id=meta.origin_client_id,
-                request_id=meta.request_id,
-                command=meta.command,
-            )
-            if persistence:
-                await persistence.save_debounced(store.snapshot())
-        finally:
-            queue.task_done()
-
 
 async def _run_updater(fn: Callable[..., Any], interval: float) -> None:
     while True:

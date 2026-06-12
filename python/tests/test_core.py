@@ -2,13 +2,13 @@ import asyncio
 
 import pytest
 import pytest_asyncio
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 from pydantic import BaseModel
 
-from lab_link import CommandContext, CommandError, LabSync
+from lab_link import CommandContext, CommandError, LabSync, ReactiveModel
 
 
-class AppState(BaseModel):
+class AppState(ReactiveModel):
     x: float = 0.0
     label: str = "hello"
 
@@ -16,10 +16,7 @@ class AppState(BaseModel):
 @pytest.fixture
 def sync_app():
     sync = LabSync()
-
-    @sync.state
-    class S(AppState):
-        pass
+    sync.bind_state(AppState())
 
     @sync.command
     def set_x(value: float):

@@ -71,6 +71,6 @@ a concrete reason to rename it.
 ## Why Two Packages?
 
 Python users should not install browser build artifacts to control instruments,
-and frontend users should not install FastAPI or Pydantic. Publishing separate
+and frontend users should not install Starlette or Pydantic. Publishing separate
 packages keeps dependency graphs clean while a shared repository keeps the
 protocol, docs, examples, and release versions coordinated.

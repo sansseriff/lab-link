@@ -7,7 +7,7 @@ send commands, and handle structured command errors.
 
 The project is published as two packages:
 
-- `lab-link` on PyPI for the FastAPI/Pydantic backend and Python sync client.
+- `lab-link` on PyPI for the Starlette/Pydantic backend and Python sync client.
 - `lab-link` on npm for the browser runtime, model layer, and Svelte/React
   adapters.
 
@@ -26,15 +26,19 @@ bun add lab-link
 Backend:
 
 ```python
-from lab_link import LabSync, ptr
+from lab_link import LabSync, ReactiveModel
+
+class AppState(ReactiveModel):
+    voltage: float = 0.0
 
 sync = LabSync()
-sync.register_state(AppState, initial=state)
+state = sync.bind_state(AppState())
 
 @sync.command
-async def set_voltage(path: str, value: float):
-    sync.set(path, round(value, 3))
-    return {"path": path, "value": round(value, 3)}
+async def set_voltage(value: float):
+    # validated, recorded, batched, and broadcast as one patch message
+    state.voltage = round(value, 3)
+    return {"value": state.voltage}
 ```
 
 Frontend:
