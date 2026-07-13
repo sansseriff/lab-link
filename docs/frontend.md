@@ -3,6 +3,33 @@
 The npm package is split into framework-neutral primitives and optional
 adapters.
 
+## Authentication
+
+`lab-link/auth` is a framework-neutral client. An app can use it from its own
+login screen while keeping all presentation downstream:
+
+```ts
+import { AuthClient, AuthError } from "lab-link/auth"
+
+const auth = new AuthClient()
+
+// Run before connecting the sync runtime. This reads #invite=…, removes it
+// from browser history, and exchanges it for an HttpOnly session cookie.
+await auth.consumeInviteFragment()
+
+try {
+  await auth.login(passphrase)
+  location.reload()
+} catch (error) {
+  if (error instanceof AuthError) showLoginError(error.code)
+}
+```
+
+Invitation secrets belong in a URL fragment, not the query string: fragments
+are not sent in HTTP requests or access logs. The client scrubs the fragment
+before exchanging it. A generated invitation expires after five minutes by
+default and can be used once.
+
 ## Core
 
 `lab-link/core` exposes `SyncConnection`, JSON Pointer helpers, command errors,

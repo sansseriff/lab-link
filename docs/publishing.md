@@ -17,8 +17,8 @@ The repository includes two trusted-publishing workflows:
 - `.github/workflows/publish-npm.yml`
 
 Both run on `v*` tags and via manual dispatch. Both verify that
-`python/pyproject.toml` and `js/package.json` have the same version before
-publishing.
+`python/pyproject.toml` and `js/package.json` have the same version. For tag
+builds, they also require the tag to be exactly `v` plus that package version.
 
 ### PyPI Trusted Publisher
 
@@ -56,12 +56,14 @@ npm publish --access public
 
 1. Update `python/pyproject.toml` and `js/package.json` to the same version.
 2. Run tests and builds.
-3. Tag the repository, for example `v0.2.0`.
-4. Push the tag. The publish workflows will run.
+3. Commit the version change.
+4. Tag that commit, for example `v0.4.0`.
+5. Push the branch and tag. The tag triggers both publish workflows.
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git push origin master
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 If the unscoped npm name is unavailable, use a scoped package such as

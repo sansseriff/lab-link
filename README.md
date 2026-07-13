@@ -26,12 +26,13 @@ bun add lab-link
 Backend:
 
 ```python
-from lab_link import LabSync, ReactiveModel
+from lab_link import LabSync, LanPassphraseAuth, ReactiveModel
 
 class AppState(ReactiveModel):
     voltage: float = 0.0
 
-sync = LabSync()
+auth = LanPassphraseAuth()  # optional LAN passphrase + one-time QR invitations
+sync = LabSync(auth=auth)
 state = sync.bind_state(AppState())
 
 @sync.command

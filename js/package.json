@@ -1,6 +1,6 @@
 {
   "name": "lab-link",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Browser runtime and adapters for server-authoritative lab link",
   "homepage": "https://sansseriff.github.io/lab-link/",
@@ -21,6 +21,10 @@
     "./model": {
       "types": "./dist/model/index.d.ts",
       "default": "./dist/model/index.js"
+    },
+    "./auth": {
+      "types": "./dist/auth/index.d.ts",
+      "default": "./dist/auth/index.js"
     },
     "./svelte": {
       "types": "./dist/svelte/index.d.ts",

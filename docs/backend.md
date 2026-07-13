@@ -39,6 +39,53 @@ async def sync_ws(ws: WebSocket):
 lab-link itself does not depend on FastAPI; install it separately if you want
 its dependency injection, validation, or OpenAPI for your own endpoints.
 
+## LAN access control
+
+`LanPassphraseAuth` provides a headless access-control pattern for instruments
+served on a trusted local network. It protects `/sync/state` and rejects a
+WebSocket before sending its initial snapshot. The application still owns its
+HTML, modal, QR code, wording, and visual design.
+
+```python
+from lab_link import LabSync, LanPassphraseAuth
+
+auth = LanPassphraseAuth(
+    passphrase=configured_passphrase,  # omit to generate one at startup
+    allowed_origins={"http://localhost:5173"},
+)
+sync = LabSync(auth=auth)
+
+# Put this short-lived, single-use token in a QR URL fragment:
+invite = auth.create_invite()
+url = f"http://192.168.1.20:8000/#invite={invite.token}"
+```
+
+The auth endpoints live below the sync prefix:
+
+- `GET /sync/auth/status`
+- `POST /sync/auth/login` with `{ "passphrase": "…" }`
+- `POST /sync/auth/invite` with `{ "invite": "…" }`
+- `POST /sync/auth/logout`
+
+Every successful login or invite exchange creates a separate HttpOnly,
+SameSite session cookie. Logging out one browser does not revoke the others.
+Passphrase attempts are rate-limited, WebSocket origins are checked, and
+invitations are stored as hashes and consumed once. Sessions and invites are
+in memory and are revoked by an application restart. Open WebSockets are
+periodically revalidated, so an expired or logged-out session cannot remain an
+indefinite control channel.
+
+Loopback clients are trusted by default so a desktop shell can open without a
+login. Set `trust_loopback=False` to require authentication there too.
+Same-origin IP-address and `localhost` URLs are accepted automatically. Add any
+named hosts to `allowed_origins` explicitly; this restriction prevents an
+arbitrary DNS-rebinding hostname from inheriting loopback trust.
+
+This is access control, not transport encryption. HTTP and `ws://` still expose
+traffic to a hostile network; use a trusted LAN or put the app behind HTTPS.
+Applications must separately gate their UI document and any other sensitive
+routes using `auth.is_http_authorized(request)`.
+
 ## State
 
 State models subclass `ReactiveModel` (a pydantic `BaseModel`). Bind one

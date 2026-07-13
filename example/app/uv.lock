@@ -125,7 +125,7 @@ wheels = [
 
 [[package]]
 name = "lab-link"
-version = "0.2.0"
+version = "0.4.0"
 source = { editable = "../../python" }
 dependencies = [
     { name = "jsonpatch" },
@@ -139,7 +139,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'" },
     { name = "jsonpatch", specifier = ">=1.33" },
     { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.24" },
-    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "sqlmodel", marker = "extra == 'persist'", specifier = ">=0.0.24" },

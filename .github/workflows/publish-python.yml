@@ -37,6 +37,12 @@ jobs:
           js_version = json.loads(pathlib.Path("js/package.json").read_text())["version"]
           if py_version != js_version:
               raise SystemExit(f"version mismatch: python={py_version} js={js_version}")
+          import os
+          if os.environ.get("GITHUB_REF_TYPE") == "tag":
+              expected = f"v{py_version}"
+              actual = os.environ["GITHUB_REF_NAME"]
+              if actual != expected:
+                  raise SystemExit(f"tag mismatch: expected {expected}, got {actual}")
           PY
 
       - name: Run Python tests

@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from .auth import SyncAuth
 from .connection_manager import ConnectionManager
 from .errors import CommandError
 from .persistence import PersistenceManager
@@ -26,6 +27,7 @@ T = TypeVar("T", bound=BaseModel)
 StateT = TypeVar("StateT", bound=ReactiveModel)
 _F = TypeVar("_F", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
+_AUTH_REVALIDATE_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,11 +77,13 @@ class LabSync:
         persist: bool = False,
         db_url: str = "sqlite:///lab_link.db",
         compress: bool = False,
+        auth: SyncAuth | None = None,
     ) -> None:
         self._prefix = prefix.rstrip("/")
         self._persist = persist
         self._db_url = db_url
         self._compress = compress
+        self.auth = auth
 
         self._store: StateStore | None = None
         self._state_obj: ReactiveModel | None = None
@@ -376,9 +380,13 @@ class LabSync:
         apps can instead wire `handle_ws` to a route of their choosing.
         """
         async def get_state(request: Any) -> JSONResponse:
+            if self.auth is not None and not self.auth.is_http_authorized(request):
+                return JSONResponse({"detail": "Authentication required"}, status_code=401)
             return JSONResponse(self._store.snapshot() if self._store else {})
 
+        auth_routes = self.auth.routes(self._prefix) if self.auth is not None else []
         return [
+            *auth_routes,
             Route(f"{self._prefix}/state", get_state),
             WebSocketRoute(f"{self._prefix}/ws", self.handle_ws),
         ]
@@ -449,6 +457,9 @@ class LabSync:
 
     async def handle_ws(self, websocket: WebSocket) -> None:
         """Serve one sync client. Attach to any websocket route in your app."""
+        if self.auth is not None and not self.auth.is_websocket_authorized(websocket):
+            await websocket.close(code=4401, reason="Authentication required")
+            return
         client_id = ConnectionManager.generate_client_id()
         snapshot = self._store.snapshot() if self._store else {}
         version = self._store.version() if self._store else 0
@@ -461,7 +472,24 @@ class LabSync:
         )
         try:
             while True:
-                data = await websocket.receive_json()
+                if self.auth is None:
+                    data = await websocket.receive_json()
+                else:
+                    try:
+                        data = await asyncio.wait_for(
+                            websocket.receive_json(),
+                            timeout=_AUTH_REVALIDATE_SECONDS,
+                        )
+                    except TimeoutError:
+                        if not self.auth.is_websocket_authorized(websocket):
+                            await websocket.close(
+                                code=4401, reason="Authentication expired"
+                            )
+                            return
+                        continue
+                    if not self.auth.is_websocket_authorized(websocket):
+                        await websocket.close(code=4401, reason="Authentication expired")
+                        return
                 msg_type = data.get("type")
                 if msg_type == "command":
                     await self._dispatch_command(
