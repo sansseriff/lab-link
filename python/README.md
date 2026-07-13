@@ -26,10 +26,14 @@ def set_voltage(value: float):
 app = sync.create_app()
 ```
 
+Persistent remote access is available through `LanPassphraseAuth` and
+`SQLiteAuthStore`, including first-run setup, remembered devices, one-time
+invitations, session revocation, and scoped API tokens.
+
 ```python
 from lab_link import LabLinkClient
 
-with LabLinkClient("ws://127.0.0.1:8000/sync/ws") as sync:
+with LabLinkClient("ws://127.0.0.1:8000/sync/ws", api_token=token) as sync:
     snapshot = sync.snapshot()
     ack = sync.send_command("set_voltage", {"value": 1.2})
 ```

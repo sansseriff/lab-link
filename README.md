@@ -1,6 +1,6 @@
 # lab-link
 
-`lab-link` is a server-authoritative synchronization library for laboratory
+`lab-link` is a server-authoritative synchronization and access-control library for laboratory
 instrument control software. Python owns hardware state and side effects;
 browsers or Python control clients receive snapshots and JSON Patch updates,
 send commands, and handle structured command errors.
@@ -45,9 +45,9 @@ async def set_voltage(value: float):
 Frontend:
 
 ```ts
-import { createSyncRuntime, SyncNode } from "lab-link/model"
+import { createSyncRuntime, SyncNode } from "lab-link/model";
 
-const runtime = createSyncRuntime({ url: "/sync/ws" })
+const runtime = createSyncRuntime({ url: "/sync/ws" });
 ```
 
 Python client:

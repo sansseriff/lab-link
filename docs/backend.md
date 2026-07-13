@@ -23,7 +23,7 @@ app = Starlette(routes=[*sync.routes, *my_routes], lifespan=sync.lifespan)
 ```
 
 Or wire the websocket handler to any route yourself. This is how a FastAPI
-app integrates — FastAPI's `WebSocket` *is* Starlette's, so `handle_ws`
+app integrates — FastAPI's `WebSocket` _is_ Starlette's, so `handle_ws`
 plugs in directly:
 
 ```python
@@ -46,34 +46,98 @@ served on a trusted local network. It protects `/sync/state` and rejects a
 WebSocket before sending its initial snapshot. The application still owns its
 HTML, modal, QR code, wording, and visual design.
 
+For process-local access with a generated startup passphrase:
+
 ```python
 from lab_link import LabSync, LanPassphraseAuth
 
+auth = LanPassphraseAuth(allowed_origins={"http://localhost:5173"})
+sync = LabSync(auth=auth)
+```
+
+For stable credentials and remembered devices, use a persistent store:
+
+```python
+from lab_link import LabSync, LanPassphraseAuth, SQLiteAuthStore
+
 auth = LanPassphraseAuth(
-    passphrase=configured_passphrase,  # omit to generate one at startup
+    store=SQLiteAuthStore("instrument-auth.db"),
     allowed_origins={"http://localhost:5173"},
 )
 sync = LabSync(auth=auth)
-
-# Put this short-lived, single-use token in a QR URL fragment:
-invite = auth.create_invite()
-url = f"http://192.168.1.20:8000/#invite={invite.token}"
 ```
+
+An empty persistent store is unconfigured and fails closed for non-loopback
+clients. A local UI checks `GET /sync/auth/status`, then calls
+`POST /sync/auth/setup` once with the chosen passphrase. The passphrase is
+stored as an Argon2id hash and remains valid across restarts until explicitly
+rotated. The SQLite file is created with owner-only permissions.
 
 The auth endpoints live below the sync prefix:
 
 - `GET /sync/auth/status`
+- `POST /sync/auth/setup` (first run, loopback only)
 - `POST /sync/auth/login` with `{ "passphrase": "…" }`
 - `POST /sync/auth/invite` with `{ "invite": "…" }`
 - `POST /sync/auth/logout`
+- `POST /sync/auth/passphrase`
+- session list/revocation below `/sync/auth/sessions`
+- invitation creation/revocation below `/sync/auth/invites`
+- API-token creation/revocation below `/sync/auth/tokens`
 
 Every successful login or invite exchange creates a separate HttpOnly,
-SameSite session cookie. Logging out one browser does not revoke the others.
+SameSite session cookie. Pass `{ "remember": true, "deviceName": "Lab iPad" }`
+to persist that hashed session in SQLite for 30 days by default. Normal
+sessions last 12 hours and deliberately do not survive a server restart.
+Logging out or revoking one browser does not affect the others; passphrase
+rotation can revoke all browser sessions.
+
+Short-lived invitations have stable IDs and lifecycle status:
+
+```python
+invite = auth.create_invite()
+url = f"http://192.168.1.20:8000/#invite={invite.token}"
+
+auth.on_invite_event(
+    lambda event: update_safe_reactive_status(event.invite_id, event.status)
+)
+```
+
+The secret token should be returned only to the requesting host UI. Put only
+the invitation ID, expiration, and `active` / `consumed` / `expired` /
+`revoked` status in shared reactive state. This lets downstream UIs grey out a
+used QR code without polling or broadcasting its credential.
+
 Passphrase attempts are rate-limited, WebSocket origins are checked, and
-invitations are stored as hashes and consumed once. Sessions and invites are
-in memory and are revoked by an application restart. Open WebSockets are
+invitations are stored as hashes and consumed once. Open WebSockets are
 periodically revalidated, so an expired or logged-out session cannot remain an
 indefinite control channel.
+
+### Principals, capabilities, and scripts
+
+`CommandContext.auth` identifies the authenticated session, local host, or API
+token. Browser sessions created with the master passphrase receive `control`
+and `manage_access`; invitation sessions receive only `control`. A command
+requires `control` by default, or may declare a different capability:
+
+```python
+@sync.command(requires={"manage_access"})
+def create_remote_invite(ctx: CommandContext):
+    return auth.create_invite()
+```
+
+Create named API tokens for scripts and show their plaintext value only once:
+
+```python
+credential = auth.create_api_token(
+    "cooldown monitor",
+    capabilities={"read_state"},
+)
+```
+
+API tokens are sent as `Authorization: Bearer ll_…`, stored only as SHA-256
+digests, individually revocable, and may have expiration times. A token without
+`control` can connect and receive state but cannot execute ordinary commands.
 
 Loopback clients are trusted by default so a desktop shell can open without a
 login. Set `trust_loopback=False` to require authentication there too.
@@ -137,7 +201,7 @@ with sync.batch():
 ```
 
 Replacing a whole subtree emits one `replace` op, and the new subtree is
-tracked from then on. The *old* object is orphaned: further writes to it are
+tracked from then on. The _old_ object is orphaned: further writes to it are
 dropped (debug-logged) because it is no longer part of the state document.
 
 For bulk restore (e.g. loading a saved snapshot), `load_state()` validates the
@@ -172,6 +236,11 @@ async def set_channel(ctx: CommandContext, channel: int, value: float):
     state.channels[channel].bias_voltage = rounded
     return {"channel": channel, "value": rounded}
 ```
+
+When authentication supplies a principal, commands require the `control`
+capability by default. Use `@sync.command(requires={...})` to declare a more
+specific requirement. Open-mode applications and legacy boolean auth backends
+continue to work without principals.
 
 Raise `CommandError` for display-ready failures:
 

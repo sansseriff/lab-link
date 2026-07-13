@@ -39,6 +39,20 @@ with LabLinkClient("ws://127.0.0.1:8000/sync/ws") as sync:
     ack = sync.send_command("set_voltage", {"channel": 0, "value": 1.2})
 ```
 
+For a remote script, create a named API token with the capabilities it needs
+and pass it directly to either client:
+
+```python
+with LabLinkClient(
+    "wss://instrument.example/sync/ws",
+    api_token=token_from_keychain,
+) as sync:
+    print(sync.snapshot())
+```
+
+The client sends the token in an `Authorization: Bearer` header. Do not embed
+the shared browser passphrase or copy browser cookies into automation scripts.
+
 ## Events
 
 Snapshots are returned as deep copies so callers cannot mutate the client cache.

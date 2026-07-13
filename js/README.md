@@ -7,16 +7,18 @@ bun add lab-link
 ```
 
 ```ts
-import { createSyncRuntime } from "lab-link/model"
+import { createSyncRuntime } from "lab-link/model";
 
 const runtime = createSyncRuntime({
   url: `ws://${window.location.host}/sync/ws`,
-})
+});
 ```
 
 Exports:
 
 - `lab-link/core`: WebSocket transport, command promises, JSON Pointer helpers.
+- `lab-link/auth`: Headless setup, login, remembered-device, invitation,
+  session, passphrase, and API-token client.
 - `lab-link/model`: `SyncRuntime`, `SyncNode`, field policies.
 - `lab-link/svelte`: Svelte 5 helpers.
 - `lab-link/react`: React helpers.

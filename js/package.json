@@ -1,6 +1,6 @@
 {
   "name": "lab-link",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "Browser runtime and adapters for server-authoritative lab link",
   "homepage": "https://sansseriff.github.io/lab-link/",
@@ -36,7 +36,9 @@
       "default": "./dist/react/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "svelte-package -i src -o dist",
     "dev": "svelte-package -i src -o dist --watch",

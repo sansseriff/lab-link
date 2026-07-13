@@ -7,7 +7,7 @@ import warnings
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from inspect import Parameter, iscoroutinefunction, signature
-from typing import Any, Callable, Iterator, Literal, TypeVar
+from typing import Any, Callable, Iterable, Iterator, Literal, TypeVar, overload
 
 from pydantic import BaseModel
 from starlette.applications import Starlette
@@ -15,7 +15,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from .auth import SyncAuth
+from .auth import AuthPrincipal, SyncAuth
 from .connection_manager import ConnectionManager
 from .errors import CommandError
 from .persistence import PersistenceManager
@@ -35,6 +35,7 @@ class CommandContext:
     client_id: str
     request_id: str | None
     command: str
+    auth: AuthPrincipal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,7 @@ class LabSync:
         self._state_obj: ReactiveModel | None = None
         self._sink: ChangeSink | None = None
         self._commands: dict[str, Callable[..., Any]] = {}
+        self._command_capabilities: dict[str, frozenset[str]] = {}
         self._updaters: list[tuple[Callable[..., Any], float]] = []
         self._streams: dict[str, StreamRef] = {}
         self._live_buffers: dict[str, AppendBuffer | ReplaceBuffer | DeltaBuffer] = {}
@@ -145,7 +147,9 @@ class LabSync:
         single whole-document ``replace`` patch.
         """
         if self._state_obj is None or self._sink is None or self._store is None:
-            raise RuntimeError("load_state() requires a bound state; call bind_state() first")
+            raise RuntimeError(
+                "load_state() requires a bound state; call bind_state() first"
+            )
         cls = type(self._state_obj)
         validated = cls.model_validate(data)
         self._sink.flush()  # don't mix earlier pending ops into the swap
@@ -153,10 +157,16 @@ class LabSync:
             for name in cls.model_fields:
                 setattr(self._state_obj, name, validated.__dict__.get(name))
         ops: list[dict[str, Any]] = [
-            {"op": "replace", "path": "", "value": self._state_obj.model_dump(mode="json")}
+            {
+                "op": "replace",
+                "path": "",
+                "value": self._state_obj.model_dump(mode="json"),
+            }
         ]
         if self._sink.is_attached:
-            version = self._commit_reactive_ops(ops, self._metadata_from_current_context())
+            version = self._commit_reactive_ops(
+                ops, self._metadata_from_current_context()
+            )
         else:
             self._apply_reactive_ops_local(ops)
             version = self._store.version()
@@ -170,7 +180,9 @@ class LabSync:
         would be attributed to their own metadata and flushed separately.
         """
         if self._sink is None:
-            raise RuntimeError("batch() requires a bound state; call bind_state() first")
+            raise RuntimeError(
+                "batch() requires a bound state; call bind_state() first"
+            )
         self._sink.suspend()
         try:
             yield
@@ -182,7 +194,9 @@ class LabSync:
         broadcast the difference. With the reactive engine the diff is normally
         empty; this is the escape hatch and the testing oracle."""
         if self._state_obj is None or self._store is None:
-            raise RuntimeError("publish() requires a bound state; call bind_state() first")
+            raise RuntimeError(
+                "publish() requires a bound state; call bind_state() first"
+            )
         if self._sink is not None:
             self._sink.flush()
         if self._store.snapshot() == self._state_obj.model_dump(mode="json"):
@@ -229,16 +243,44 @@ class LabSync:
 
     # ── decorators ──────────────────────────────────────────────────────────
 
-    def command(self, fn: _F) -> _F:
-        """@sync.command — registers fn under fn.__name__. Supports sync & async."""
-        self._commands[fn.__name__] = fn
-        return fn
+    @overload
+    def command(self, fn: _F, /) -> _F: ...
+
+    @overload
+    def command(
+        self, fn: None = None, /, *, requires: Iterable[str]
+    ) -> Callable[[_F], _F]: ...
+
+    def command(
+        self,
+        fn: _F | None = None,
+        /,
+        *,
+        requires: Iterable[str] | None = None,
+    ) -> _F | Callable[[_F], _F]:
+        """Register a command, optionally requiring authenticated capabilities.
+
+        Authenticated principals require ``control`` by default. Use
+        ``@sync.command(requires={"manage_access"})`` for a more privileged
+        operation. Unauthenticated/open-mode applications remain compatible.
+        """
+
+        def register(handler: _F) -> _F:
+            self._commands[handler.__name__] = handler
+            self._command_capabilities[handler.__name__] = frozenset(
+                {"control"} if requires is None else requires
+            )
+            return handler
+
+        return register(fn) if fn is not None else register
 
     def updater(self, interval: float = 1.0) -> Callable[[_F], _F]:
         """@sync.updater(interval=0.1) — registers a background polling coroutine."""
+
         def decorator(fn: _F) -> _F:
             self._updaters.append((fn, interval))
             return fn
+
         return decorator
 
     # ── stream registration ──────────────────────────────────────────────────
@@ -302,9 +344,13 @@ class LabSync:
             self._set_on_model(path, value)
             ops = self._sink.flush() if self._sink is not None else []
             return ops, self._store.version() if self._store else 0
-        return self._commit_changes([(path, value)], self._metadata_from_current_context())
+        return self._commit_changes(
+            [(path, value)], self._metadata_from_current_context()
+        )
 
-    def replace_state(self, state: BaseModel | dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    def replace_state(
+        self, state: BaseModel | dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], int]:
         """Deprecated: use ``load_state()``."""
         warnings.warn(
             "sync.replace_state() is deprecated; use sync.load_state()",
@@ -340,8 +386,12 @@ class LabSync:
         )
         ctx = _current_command_context.get()
         meta = PatchMetadata(
-            origin_client_id=origin if origin is not None else (ctx.client_id if ctx else None),
-            request_id=request_id if request_id is not None else (ctx.request_id if ctx else None),
+            origin_client_id=origin
+            if origin is not None
+            else (ctx.client_id if ctx else None),
+            request_id=request_id
+            if request_id is not None
+            else (ctx.request_id if ctx else None),
             command=command if command is not None else (ctx.command if ctx else None),
         )
         return StateTransaction(self, meta)
@@ -349,7 +399,9 @@ class LabSync:
     def _set_on_model(self, path: str, value: Any) -> None:
         parts = _parse_pointer(path)
         if not parts:
-            raise ValueError("path must not be empty; use load_state() for root replacement")
+            raise ValueError(
+                "path must not be empty; use load_state() for root replacement"
+            )
         node: Any = self._state_obj
         for part in parts[:-1]:
             node = _model_child(node, part, path)
@@ -379,9 +431,12 @@ class LabSync:
         Pass to `Starlette(routes=...)` or `app.routes.extend(...)`. FastAPI
         apps can instead wire `handle_ws` to a route of their choosing.
         """
+
         async def get_state(request: Any) -> JSONResponse:
             if self.auth is not None and not self.auth.is_http_authorized(request):
-                return JSONResponse({"detail": "Authentication required"}, status_code=401)
+                return JSONResponse(
+                    {"detail": "Authentication required"}, status_code=401
+                )
             return JSONResponse(self._store.snapshot() if self._store else {})
 
         auth_routes = self.auth.routes(self._prefix) if self.auth is not None else []
@@ -415,7 +470,9 @@ class LabSync:
                     else:
                         self._store.replace_state(saved)
             except Exception:
-                logger.exception("Failed to restore persisted state from %s", self._db_url)
+                logger.exception(
+                    "Failed to restore persisted state from %s", self._db_url
+                )
 
         if self._sink is not None:
             self._sink.attach_loop(asyncio.get_running_loop())
@@ -445,6 +502,7 @@ class LabSync:
 
     def create_app(self, **starlette_kwargs: Any) -> Starlette:
         """Convenience: creates a Starlette app with lifespan + routes pre-wired."""
+
         @asynccontextmanager
         async def _lifespan(app: Starlette):
             async with self.lifespan(app):
@@ -457,15 +515,15 @@ class LabSync:
 
     async def handle_ws(self, websocket: WebSocket) -> None:
         """Serve one sync client. Attach to any websocket route in your app."""
-        if self.auth is not None and not self.auth.is_websocket_authorized(websocket):
+        authorized, principal = self._websocket_auth(websocket)
+        if not authorized:
             await websocket.close(code=4401, reason="Authentication required")
             return
         client_id = ConnectionManager.generate_client_id()
         snapshot = self._store.snapshot() if self._store else {}
         version = self._store.version() if self._store else 0
         stream_snapshots = [
-            buf.snapshot_message()
-            for buf in self._live_buffers.values()
+            buf.snapshot_message() for buf in self._live_buffers.values()
         ]
         await self._conn_manager.connect(
             websocket, client_id, snapshot, version, stream_snapshots
@@ -481,14 +539,18 @@ class LabSync:
                             timeout=_AUTH_REVALIDATE_SECONDS,
                         )
                     except TimeoutError:
-                        if not self.auth.is_websocket_authorized(websocket):
+                        authorized, principal = self._websocket_auth(websocket)
+                        if not authorized:
                             await websocket.close(
                                 code=4401, reason="Authentication expired"
                             )
                             return
                         continue
-                    if not self.auth.is_websocket_authorized(websocket):
-                        await websocket.close(code=4401, reason="Authentication expired")
+                    authorized, principal = self._websocket_auth(websocket)
+                    if not authorized:
+                        await websocket.close(
+                            code=4401, reason="Authentication expired"
+                        )
                         return
                 msg_type = data.get("type")
                 if msg_type == "command":
@@ -498,18 +560,32 @@ class LabSync:
                         command=str(data.get("command", "")),
                         params=dict(data.get("params") or {}),
                         request_id=data.get("requestId"),
+                        auth=principal,
                     )
                 elif msg_type == "stream_resync":
                     stream_id = data.get("id")
                     buf = self._live_buffers.get(stream_id)
                     if buf:
-                        await self._conn_manager.send_to(client_id, buf.snapshot_message())
+                        await self._conn_manager.send_to(
+                            client_id, buf.snapshot_message()
+                        )
         except WebSocketDisconnect:
             pass
         except Exception:
             logger.exception("Unhandled WebSocket error for client %s", client_id)
         finally:
             await self._conn_manager.disconnect(client_id)
+
+    def _websocket_auth(
+        self, websocket: WebSocket
+    ) -> tuple[bool, AuthPrincipal | None]:
+        if self.auth is None:
+            return True, None
+        principal_getter = getattr(self.auth, "principal_for_websocket", None)
+        if principal_getter is not None:
+            principal = principal_getter(websocket)
+            return principal is not None, principal
+        return self.auth.is_websocket_authorized(websocket), None
 
     async def _dispatch_command(
         self,
@@ -518,6 +594,7 @@ class LabSync:
         command: str,
         params: dict[str, Any],
         request_id: str | None,
+        auth: AuthPrincipal | None,
     ) -> None:
         handler = self._commands.get(command)
         if handler is None:
@@ -538,7 +615,30 @@ class LabSync:
                 )
             return
 
-        ctx = CommandContext(client_id=client_id, request_id=request_id, command=command)
+        required = self._command_capabilities.get(command, frozenset({"control"}))
+        if auth is not None and any(
+            not auth.can(capability) for capability in required
+        ):
+            if request_id:
+                await self._send_command_error(
+                    websocket,
+                    CommandError(
+                        code="forbidden",
+                        message="This credential is not permitted to run that command.",
+                        recoverable=False,
+                    ),
+                    command,
+                    request_id,
+                    client_id,
+                )
+            return
+
+        ctx = CommandContext(
+            client_id=client_id,
+            request_id=request_id,
+            command=command,
+            auth=auth,
+        )
         token = _current_command_context.set(ctx)
         try:
             if iscoroutinefunction(handler):
@@ -564,7 +664,9 @@ class LabSync:
                     message["result"] = result
                 await websocket.send_json(message)
         except CommandError as exc:
-            await self._send_command_error(websocket, exc, command, request_id, client_id)
+            await self._send_command_error(
+                websocket, exc, command, request_id, client_id
+            )
         except Exception as exc:
             logger.exception("Command %r failed", command)
             if request_id:
@@ -636,7 +738,9 @@ class LabSync:
 
     # ── patch commit / broadcast ──────────────────────────────────────────────
 
-    def _commit_reactive_ops(self, ops: list[dict[str, Any]], meta: PatchMetadata) -> int:
+    def _commit_reactive_ops(
+        self, ops: list[dict[str, Any]], meta: PatchMetadata
+    ) -> int:
         version = self._store.apply_patch(ops)
         self._schedule_patch_broadcast(ops, version, meta)
         return version
@@ -730,6 +834,7 @@ def _model_child(node: Any, part: str, full_path: str) -> Any:
 
 
 # ── background tasks ──────────────────────────────────────────────────────────
+
 
 async def _run_updater(fn: Callable[..., Any], interval: float) -> None:
     while True:

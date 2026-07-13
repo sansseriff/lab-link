@@ -9,19 +9,32 @@ adapters.
 login screen while keeping all presentation downstream:
 
 ```ts
-import { AuthClient, AuthError } from "lab-link/auth"
+import { AuthClient, AuthError } from "lab-link/auth";
 
-const auth = new AuthClient()
+const auth = new AuthClient();
+
+const status = await auth.status();
+if (!status.configured) {
+  // This succeeds only from loopback and is intended for a downstream
+  // first-run setup screen.
+  await auth.setup(chosenPassphrase, {
+    remember: true,
+    deviceName: "Instrument host",
+  });
+}
 
 // Run before connecting the sync runtime. This reads #invite=…, removes it
 // from browser history, and exchanges it for an HttpOnly session cookie.
-await auth.consumeInviteFragment()
+await auth.consumeInviteFragment();
 
 try {
-  await auth.login(passphrase)
-  location.reload()
+  await auth.login(passphrase, {
+    remember: trustThisDevice,
+    deviceName: "Andrew's iPad",
+  });
+  location.reload();
 } catch (error) {
-  if (error instanceof AuthError) showLoginError(error.code)
+  if (error instanceof AuthError) showLoginError(error.code);
 }
 ```
 
@@ -30,6 +43,12 @@ are not sent in HTTP requests or access logs. The client scrubs the fragment
 before exchanging it. A generated invitation expires after five minutes by
 default and can be used once.
 
+Host/admin interfaces can use the same headless client to call
+`createInvite()`, observe safe invitation status projected through the app's
+reactive model, list or revoke `sessions()`, call `revokeAllSessions()`, change
+the passphrase, and create or revoke scoped API tokens. lab-link deliberately
+does not provide the visual setup, device-management, countdown, or reset UI.
+
 ## Core
 
 `lab-link/core` exposes `SyncConnection`, JSON Pointer helpers, command errors,
@@ -37,11 +56,11 @@ and stream handles. Use it when you want transport primitives without object
 hydration.
 
 ```ts
-import { SyncConnection } from "lab-link/core"
+import { SyncConnection } from "lab-link/core";
 
-const connection = new SyncConnection("ws://localhost:8000/sync/ws")
-connection.onCommandError((error) => showError(error.message))
-connection.connect()
+const connection = new SyncConnection("ws://localhost:8000/sync/ws");
+connection.onCommandError((error) => showError(error.message));
+connection.connect();
 ```
 
 ## Model
@@ -52,8 +71,8 @@ and declared server-synchronized fields.
 
 ```ts
 class ChannelModel extends SyncNode<ChannelSnapshot> {
-  bias_voltage = 0
-  editing = false
+  bias_voltage = 0;
+  editing = false;
 
   override readonly fields = this.defineFields<this>({
     bias_voltage: {
@@ -62,10 +81,10 @@ class ChannelModel extends SyncNode<ChannelSnapshot> {
       validateRemote: (value) => typeof value === "number",
       setVia: "set_channel",
     },
-  })
+  });
 
   applySnapshot(snapshot: ChannelSnapshot) {
-    this.bias_voltage = snapshot.bias_voltage
+    this.bias_voltage = snapshot.bias_voltage;
   }
 }
 ```

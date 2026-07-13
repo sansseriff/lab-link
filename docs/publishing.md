@@ -57,13 +57,13 @@ npm publish --access public
 1. Update `python/pyproject.toml` and `js/package.json` to the same version.
 2. Run tests and builds.
 3. Commit the version change.
-4. Tag that commit, for example `v0.4.0`.
+4. Tag that commit, for example `v0.5.0`.
 5. Push the branch and tag. The tag triggers both publish workflows.
 
 ```bash
 git push origin master
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.5.0
+git push origin v0.5.0
 ```
 
 If the unscoped npm name is unavailable, use a scoped package such as

@@ -9,6 +9,7 @@ import threading
 import uuid
 from collections import deque
 from dataclasses import dataclass
+from importlib.metadata import version as package_version
 from typing import Any, Awaitable, Callable
 
 import jsonpatch
@@ -104,12 +105,22 @@ class AsyncLabLinkClient:
         *,
         command_timeout: float = 10.0,
         connect_timeout: float = 10.0,
+        api_token: str | None = None,
         websocket_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self.url = url
         self.command_timeout = command_timeout
         self.connect_timeout = connect_timeout
         self.websocket_kwargs = dict(websocket_kwargs or {})
+        if api_token:
+            header_key = (
+                "additional_headers"
+                if int(package_version("websockets").split(".", 1)[0]) >= 14
+                else "extra_headers"
+            )
+            headers = dict(self.websocket_kwargs.get(header_key) or {})
+            headers.setdefault("Authorization", f"Bearer {api_token}")
+            self.websocket_kwargs[header_key] = headers
 
         self.version = 0
         self._snapshot: dict[str, Any] | None = None
@@ -390,12 +401,14 @@ class LabLinkClient:
         *,
         command_timeout: float = 10.0,
         connect_timeout: float = 10.0,
+        api_token: str | None = None,
         websocket_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self._async_client = AsyncLabLinkClient(
             url,
             command_timeout=command_timeout,
             connect_timeout=connect_timeout,
+            api_token=api_token,
             websocket_kwargs=websocket_kwargs,
         )
         self._loop: asyncio.AbstractEventLoop | None = None

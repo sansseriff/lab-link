@@ -153,7 +153,9 @@ async def test_async_client_command_timeout(protocol_server):
 
     async with AsyncLabLinkClient(url) as client:
         with pytest.raises(SyncCommandError) as exc_info:
-            await client.send_command("hang", {}, request_id="req-timeout", timeout=0.01)
+            await client.send_command(
+                "hang", {}, request_id="req-timeout", timeout=0.01
+            )
 
     error = exc_info.value
     assert error.command == "hang"
@@ -180,3 +182,20 @@ async def test_sync_client_wrapper(protocol_server):
     assert snapshot == {"x": 3.25, "label": "hello"}
     assert ack.request_id == "req-sync"
     assert ack.version == 1
+
+
+def test_clients_add_bearer_header_for_api_token():
+    async_client = AsyncLabLinkClient(
+        "ws://instrument.test/sync/ws", api_token="ll_secret"
+    )
+    headers = async_client.websocket_kwargs.get(
+        "additional_headers", async_client.websocket_kwargs.get("extra_headers")
+    )
+    assert headers == {"Authorization": "Bearer ll_secret"}
+
+    sync_client = LabLinkClient("ws://instrument.test/sync/ws", api_token="ll_secret")
+    headers = sync_client._async_client.websocket_kwargs.get(
+        "additional_headers",
+        sync_client._async_client.websocket_kwargs.get("extra_headers"),
+    )
+    assert headers == {"Authorization": "Bearer ll_secret"}
