@@ -4,6 +4,13 @@
 It keeps Python instrument services authoritative while giving browser UIs a
 typed, reactive view of state.
 
+Because browser pages can attempt cross-origin WebSocket connections to
+localhost and private-network addresses, lab-link also provides server-side
+origin validation, persistent passphrase sessions, one-use invitations, and
+scoped API tokens. See [Why lab-link includes access control](security.md) for
+the laboratory-control threat model and the boundary between the library and
+an application's UI.
+
 The core protocol is simple:
 
 1. A browser connects over WebSocket and receives a state snapshot.
@@ -29,6 +36,7 @@ protocol changes share one semantic version.
 
 - [Get started](get-started.md)
 - [How lab-link works](how-it-works.md)
+- [Why lab-link includes access control](security.md)
 - [Backend API](backend.md)
 - [Python Client API](python-client.md)
 - [Frontend API](frontend.md)

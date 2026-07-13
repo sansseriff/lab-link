@@ -8,34 +8,62 @@ adapters.
 `lab-link/auth` is a framework-neutral client. An app can use it from its own
 login screen while keeping all presentation downstream:
 
+The auth step must finish **before** constructing or connecting the sync
+runtime. A login screen that merely hides the controls is insufficient: the
+server session established here is what permits the WebSocket handshake.
+
+### Complete startup flow
+
 ```ts
 import { AuthClient, AuthError } from "lab-link/auth";
 
 const auth = new AuthClient();
 
-const status = await auth.status();
-if (!status.configured) {
-  // This succeeds only from loopback and is intended for a downstream
-  // first-run setup screen.
-  await auth.setup(chosenPassphrase, {
-    remember: true,
-    deviceName: "Instrument host",
-  });
+async function authorize(): Promise<void> {
+  let status = await auth.status();
+
+  if (!status.configured) {
+    // Show this screen only on the instrument computer. The server rejects
+    // first-run setup from non-loopback clients.
+    const chosenPassphrase = await showFirstRunSetup();
+    status = await auth.setup(chosenPassphrase, {
+      remember: true,
+      deviceName: "Instrument host",
+    });
+  }
+
+  if (!status.authorized && location.hash.includes("invite=")) {
+    // Reads #invite=…, scrubs it from browser history, and exchanges it for
+    // an HttpOnly session cookie. An error means the link expired or was used.
+    await auth.consumeInviteFragment("invite", {
+      remember: true,
+      deviceName: describeThisDevice(),
+    });
+    status = await auth.status();
+  }
+
+  while (!status.authorized) {
+    const { passphrase, remember, deviceName } = await showLoginForm();
+    try {
+      status = await auth.login(passphrase, { remember, deviceName });
+    } catch (error) {
+      if (error instanceof AuthError) showLoginError(error.code);
+      else throw error;
+    }
+  }
 }
 
-// Run before connecting the sync runtime. This reads #invite=…, removes it
-// from browser history, and exchanges it for an HttpOnly session cookie.
-await auth.consumeInviteFragment();
-
-try {
-  await auth.login(passphrase, {
-    remember: trustThisDevice,
-    deviceName: "Andrew's iPad",
-  });
-  location.reload();
-} catch (error) {
-  if (error instanceof AuthError) showLoginError(error.code);
+async function startApplication(): Promise<void> {
+  try {
+    await authorize();
+    connectSyncRuntime(); // Only now open /sync/ws.
+  } catch (error) {
+    if (error instanceof AuthError) showLoginError(error.code);
+    else throw error;
+  }
 }
+
+void startApplication();
 ```
 
 Invitation secrets belong in a URL fragment, not the query string: fragments
@@ -48,6 +76,32 @@ Host/admin interfaces can use the same headless client to call
 reactive model, list or revoke `sessions()`, call `revokeAllSessions()`, change
 the passphrase, and create or revoke scoped API tokens. lab-link deliberately
 does not provide the visual setup, device-management, countdown, or reset UI.
+
+For example, a downstream remote-access panel can issue a fresh invitation
+and build one URL for each reachable host address:
+
+```ts
+const invite = await auth.createInvite(5 * 60);
+const urls = hostAddresses.map((host) =>
+  `http://${host}:8000/#invite=${encodeURIComponent(invite.token)}`
+);
+
+showQrCodeAndLinks({
+  inviteId: invite.id,
+  expiresAt: invite.expiresAt,
+  urls,
+});
+```
+
+Do not place `invite.token` in shared reactive state: every connected client
+would receive it. Return it only to the authorized caller that requested the
+invitation. Publish the ID and status instead, and disable the QR code and
+copy buttons when the server reports `consumed`, `expired`, or `revoked`.
+
+The master passphrase should not be saved in local storage. A remembered login
+uses an HttpOnly cookie that frontend JavaScript cannot read; if that cookie is
+lost, the operator can log in again with the stable master passphrase. See the
+[security model](security.md) for credential roles and limitations.
 
 ## Core
 

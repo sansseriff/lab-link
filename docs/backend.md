@@ -46,6 +46,12 @@ served on a trusted local network. It protects `/sync/state` and rejects a
 WebSocket before sending its initial snapshot. The application still owns its
 HTML, modal, QR code, wording, and visual design.
 
+This layer exists because CORS does not authorize WebSockets. An unrelated
+website can attempt a connection to a loopback or LAN address from the
+operator's browser unless the WebSocket server validates the handshake and
+requires a credential. Read the [security model](security.md) for the full
+attack path, guarantees, and limits.
+
 For process-local access with a generated startup passphrase:
 
 ```python
@@ -67,11 +73,79 @@ auth = LanPassphraseAuth(
 sync = LabSync(auth=auth)
 ```
 
+### Complete persistent setup
+
+Create the auth store and `LabSync` once, bind the authoritative model, then
+serve the routes returned by `create_app()`. Keep the database outside a
+public/static directory and include it in the application's backup policy:
+
+```python
+from pathlib import Path
+
+from lab_link import (
+    CommandContext,
+    LabSync,
+    LanPassphraseAuth,
+    ReactiveModel,
+    SQLiteAuthStore,
+)
+
+
+class InstrumentState(ReactiveModel):
+    output_enabled: bool = False
+    voltage: float = 0.0
+
+
+data_dir = Path.home() / ".my-instrument"
+data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+auth = LanPassphraseAuth(
+    store=SQLiteAuthStore(data_dir / "access.db"),
+    # Add only separately hosted UI origins. Same-origin localhost and IP
+    # addresses are recognized automatically.
+    allowed_origins={"http://localhost:5173"},
+)
+sync = LabSync(auth=auth)
+state = sync.bind_state(InstrumentState())
+
+
+@sync.command
+def set_voltage(ctx: CommandContext, value: float) -> dict[str, float]:
+    # An authenticated principal needs `control` for this command by default.
+    apply_voltage_to_hardware(value)
+    state.voltage = value
+    return {"voltage": value}
+
+
+@sync.command(requires={"manage_access"})
+def reset_remote_access(ctx: CommandContext) -> dict[str, str]:
+    invite = auth.create_invite()
+    return {
+        "id": invite.id,
+        "token": invite.token,
+        "expiresAt": invite.expires_at.isoformat(),
+    }
+
+
+app = sync.create_app()
+```
+
+Run the ASGI app on the addresses the instrument should accept, for example
+`uvicorn my_instrument:app --host 0.0.0.0 --port 8000`. Binding to all
+interfaces makes it reachable; authentication decides who may use it. Network
+firewalls and HTTPS remain separate deployment concerns.
+
 An empty persistent store is unconfigured and fails closed for non-loopback
 clients. A local UI checks `GET /sync/auth/status`, then calls
 `POST /sync/auth/setup` once with the chosen passphrase. The passphrase is
 stored as an Argon2id hash and remains valid across restarts until explicitly
 rotated. The SQLite file is created with owner-only permissions.
+
+Do not generate a new master passphrase on every startup. The persistent
+passphrase is the recovery credential when a remote operator loses a browser
+session. First-run setup should ask the local operator to choose and save it;
+later starts reuse its Argon2id hash. Use passphrase rotation when the shared
+credential should actually change.
 
 The auth endpoints live below the sync prefix:
 
